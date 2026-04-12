@@ -1092,7 +1092,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
   return (
     <div style={S.page} className={isLight ? "light-mode" : "dark-mode"}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600&display=swap');
+
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         html { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; }
         body { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; margin: 0; }
@@ -1841,7 +1841,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     <>
     <div style={S.page} className={isLight ? "light-mode" : "dark-mode"} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;500;600&display=swap');
+
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         html { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; }
         body { overscroll-behavior: none; overscroll-behavior-y: none; height: 100%; margin: 0; }
