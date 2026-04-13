@@ -501,7 +501,7 @@ function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTe
   }) : [];
   const payload = {
     v: "1",
-    c: (courseName||"Custom").slice(0,30),
+    c: (courseName||"Custom").replace(/[^\x20-\x7E]/g, '-').slice(0,30),
     d: new Date().toISOString().slice(0,10).replace(/-/g,""),
     p: names.map(n=>n.slice(0,8)),
     h: hcps,
