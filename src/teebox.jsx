@@ -877,6 +877,7 @@ function SplashContent({ onDone, isLight }) {
   return (
     <div style={{ minHeight:"100vh", background:"#000", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:24, padding:"40px 20px" }}>
       <style>{`
+        html, body, #root { background: #000 !important; }
         @keyframes tbRingAppear { 0%{opacity:0;transform:scale(0.5)} 30%{opacity:1;transform:scale(1.05)} 45%{transform:scale(0.97)} 55%{transform:scale(1)} 100%{opacity:1;transform:scale(1)} }
         @keyframes tbTeeLeft    { 0%{transform:translateX(-180px);opacity:0} 100%{transform:translateX(0);opacity:1} }
         @keyframes tbTeeRight   { 0%{transform:translateX(180px);opacity:0}  100%{transform:translateX(0);opacity:1} }
