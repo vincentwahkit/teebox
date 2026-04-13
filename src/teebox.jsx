@@ -8,7 +8,7 @@ const VEGAS_VAL = 1;
 const CT_VAL = 3;
 const P3_VAL = 5;
 const DEFAULT_MATCHUP = [
-  { type: "nassau", p1: 0, p2: 1, strokesFront: 0, strokesBack: 0, stake: 5, pressMode: "off", units: [1, 1, 2] },
+  { type: "nassau", p1: 0, p2: 1, strokesFront: 0, strokesBack: 0, stake: 5, pressMode: "off", pressMult: 1, units: [1, 1, 2] },
 ];
 // Laguna National Classic Course, Singapore — Blue tees, Par 72
 const LAGUNA_CLASSIC_HOLES = [
@@ -348,30 +348,51 @@ function computeNassau(matchup, gross, holes, inPlay) {
   const overall = segmentStatus(0, 17);
   const presses = [];
   if (matchup.pressMode !== "off") {
-    let pressStart = null, pressStatus = 0, runningStatus = 0;
-    for (let hi = 0; hi < 18; hi++) {
-      if (!inPlay[hi]) continue;
-      const g1 = parseInt(gross[hi][p1], 10);
-      const g2 = parseInt(gross[hi][p2], 10);
-      if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
-      runningStatus += holeWL[hi];
-      if (matchup.pressMode === "auto" && pressStart === null && runningStatus === -2) {
-        pressStart = hi + 1; pressStatus = 0;
-      } else if (pressStart !== null) {
-        pressStatus += holeWL[hi];
+    const { units = [1, 1, 2] } = matchup;
+    const perNine = units[0] > 0 || units[1] > 0;
+    const segments = perNine ? [[0, 8], [9, 17]] : [[0, 17]];
+    for (const [startHi, endHi] of segments) {
+      let pressStart = null, pressStatus = 0, runningStatus = 0;
+      const segLen = endHi - startHi + 1;
+      let holesPlayedInSeg = 0;
+      for (let hi = startHi; hi <= endHi; hi++) {
+        if (!inPlay[hi]) continue;
+        const g1 = parseInt(gross[hi][p1], 10);
+        const g2 = parseInt(gross[hi][p2], 10);
+        if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
+        holesPlayedInSeg++;
+        runningStatus += holeWL[hi];
+        const holesRemaining = segLen - holesPlayedInSeg;
+        const isDormie = holesRemaining > 0 && Math.abs(runningStatus) === holesRemaining;
+        if (pressStart === null) {
+          if (matchup.pressMode === "auto" && Math.abs(runningStatus) >= 2) {
+            pressStart = hi + 1;
+            pressStatus = 0;
+          } else if (matchup.pressMode === "dormie" && isDormie) {
+            pressStart = hi + 1;
+            pressStatus = 0;
+          }
+        } else {
+          pressStatus += holeWL[hi];
+        }
       }
+      if (pressStart !== null) presses.push({ startHole: pressStart + 1, status: pressStatus });
     }
-    if (pressStart !== null) presses.push({ startHole: pressStart + 1, status: pressStatus });
   }
   return { front, back, overall, presses, holeWL, strokeMaps };
 }
 
 function nassauDollars(matchup, front, back, overall, presses) {
-  const { stake, units = [1, 1, 2] } = matchup;
+  const { stake, units = [1, 1, 2], pressMult = 1 } = matchup;
+  if (matchup.type === "stroke") {
+    // Net holes won × stake/hole
+    const net = overall.status * stake;
+    return { frontDollars: 0, backDollars: 0, overallDollars: net, pressDollars: 0, net };
+  }
   const frontDollars   = front.status   === 0 || units[0] === 0 ? 0 : front.status   > 0 ?  stake * units[0] : -stake * units[0];
   const backDollars    = back.status    === 0 || units[1] === 0 ? 0 : back.status    > 0 ?  stake * units[1] : -stake * units[1];
   const overallDollars = overall.status === 0 || units[2] === 0 ? 0 : overall.status > 0 ?  stake * units[2] : -stake * units[2];
-  const pressDollars   = presses.reduce((sum, p) => sum + (p.status === 0 ? 0 : p.status > 0 ? stake : -stake), 0);
+  const pressDollars   = presses.reduce((sum, p) => sum + (p.status === 0 ? 0 : p.status > 0 ? stake * pressMult : -stake * pressMult), 0);
   const net = frontDollars + backDollars + overallDollars + pressDollars;
   return { frontDollars, backDollars, overallDollars, pressDollars, net };
 }
@@ -1217,7 +1238,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
               </div>
             </div>
             {Array.from({length: playerCount}, (_,i) => (
-              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+              <div key={i} style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center" }}>
                 {/* Reorder arrows */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }}>
                   <button onClick={() => {
@@ -1239,9 +1260,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                 </div>
                 <div style={{ ...S.dot, background: isLight ? COLORS_LIGHT[i] : COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, flexShrink: 0 }}>{i+1}</div>
                 <input value={names[i]} placeholder={`Player ${i+1}`}
-                  style={{ ...S.inp, flex: 3, fontSize: 16, padding: "11px 14px" }}
+                  style={{ ...S.inp, flex: 1, minWidth: 0, fontSize: 16, padding: "11px 10px" }}
                   onChange={e => { const n=[...names]; n[i]=e.target.value; setNames(n); try { localStorage.setItem("sws_names", JSON.stringify(n)); } catch(_){} }} />
-                <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
                   <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.max(0,h[i]-1); setHcps(h); try{localStorage.setItem("sws_hcps",JSON.stringify(h));}catch(_){} }} style={S.pmBtnInline}>−</button>
                   <span style={{ width: 34, textAlign: "center", color: "var(--text)", fontSize: 17, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{hcps[i]}</span>
                   <button className="pm-btn" onClick={() => { const h=[...hcps]; h[i]=Math.min(36,h[i]+1); setHcps(h); try{localStorage.setItem("sws_hcps",JSON.stringify(h));}catch(_){} }} style={S.pmBtnInline}>+</button>
@@ -1475,7 +1496,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                         </div>
                         {/* Type toggle */}
                         <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                          {[["nassau","Nassau"],["gdb","GDB"]].map(([val,label]) => (
+                          {[["nassau","Nassau"],["gdb","GDB"],["stroke","Match Play"]].map(([val,label]) => (
                             <button key={val} onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].type=val; return { ...n, matchups: ms }; })}
                               style={{ flex: 1, padding: "8px 0", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: "700",
                                 border: `1px solid ${(m.type||"nassau")===val?"var(--accent)":"var(--border)"}`,
@@ -1531,7 +1552,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                           <div>
                             <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Stake</span>
                             <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
-                              {(m.type||"nassau")==="nassau" ? `F=1× B=1× Overall=2×` : `Game 3× · Dormie 1× · Bye 1×`}
+                              {(m.type||"nassau")==="nassau" ? `F=1× B=1× Overall=2×` : (m.type)==="gdb" ? `Game 3× · Dormie 1× · Bye 1×` : `Net holes won × stake/hole`}
                             </div>
                           </div>
                           <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
@@ -1571,11 +1592,40 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                             </span>
                           </div>
                         )}
+                        {/* Press mode — Nassau and GDB only */}
+                        {(m.type||"nassau") !== "stroke" && (<>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                          <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Auto Press</span>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {[["off","Off"],["auto","2-Down"],["dormie","Dormie"]].map(([val,label]) => (
+                              <button key={val} onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].pressMode=val; return { ...n, matchups: ms }; })}
+                                style={{ padding: "6px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                                  border: `1px solid ${m.pressMode===val?"var(--accent)":"var(--border)"}`,
+                                  background: m.pressMode===val?"var(--accent)":"transparent",
+                                  color: m.pressMode===val?"#000":"var(--muted)",
+                                  fontFamily: "'DM Sans', sans-serif" }}>
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        {/* Press multiplier — only when press is on */}
+                        {m.pressMode !== "off" && (
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                            <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Press stake</span>
+                            <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                              <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].pressMult=Math.max(1,(ms[mi].pressMult||1)-1); return { ...n, matchups: ms }; })} style={S.pmBtnInline}>−</button>
+                              <span style={{ width: 38, textAlign: "center", color: "var(--accent)", fontSize: 16, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{m.pressMult||1}</span>
+                              <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].pressMult=(ms[mi].pressMult||1)+1; return { ...n, matchups: ms }; })} style={S.pmBtnInline}>+</button>
+                            </div>
+                          </div>
+                        )}
+                        </>)}
                       </div>
                     ))}
                     {matchupBets.matchups.length < 6 && (
                       <button onClick={() => setMatchupBets(n => ({
-                        ...n, matchups: [...n.matchups, { type:"nassau", p1:0, p2:1, strokesFront:0, strokesBack:0, stake:5, pressMode:"off", units:[1,1,2] }]
+                        ...n, matchups: [...n.matchups, { type:"nassau", p1:0, p2:1, strokesFront:0, strokesBack:0, stake:5, pressMode:"off", pressMult:1, units:[1,1,2] }]
                       }))} style={{ ...S.courseBtn, width: "100%", textAlign: "center", marginTop: 2 }}>
                         + Add Matchup ({matchupBets.matchups.length}/6)
                       </button>
@@ -2444,6 +2494,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   const p1col = isLight ? COLORS_LIGHT[m.p1] : COLORS[m.p1];
                   const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
                   const isGDB = m.type === "gdb";
+                  const isStroke = m.type === "stroke";
                   function segLabel(seg) {
                     if (!seg || seg.holesPlayed === 0) return <span style={{ color: "var(--text)", fontWeight: "600" }}>—</span>;
                     if (seg.status === 0) return <span style={{ color: "var(--text)", fontWeight: "700" }}>AS</span>;
@@ -2456,7 +2507,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   return (
                     <div key={mi} style={{ background: "var(--card)", borderRadius: 10, padding: "12px 14px", marginBottom: 10, border: `2px solid ${isLight?"#888":"#3a5a3a"}` }}>
                       <div style={{ fontSize: 18, fontWeight: "800", color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
-                        <span style={{ fontSize: 11, color: "var(--dim)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : "NASSAU"}</span>
+                        <span style={{ fontSize: 11, color: "var(--dim)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isStroke ? "MATCH PLAY" : "NASSAU"}</span>
                         <span style={{ color: p1col }}>{liveNames[m.p1]}</span> <span style={{ color: "var(--dim)", fontSize: 14 }}>vs</span> <span style={{ color: p2col }}>{liveNames[m.p2]}</span>
                         <span style={{ fontSize: 12, fontWeight: "500", color: "var(--muted)", marginLeft: 6 }}>{(() => {
                           const eff = holeIdx < 9 ? m.strokesFront : m.strokesBack;
@@ -2509,7 +2560,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         );
                       })()}
                       {/* Nassau: Front/Back/Overall status boxes */}
-                      {!isGDB && (
+                      {!isGDB && !isStroke && (
                         <div style={{ display: "flex", gap: 8, fontSize: 14, fontFamily: "'DM Sans', sans-serif", marginTop: 8 }}>
                           {[["FRONT", r.front], ["BACK", r.back], ["OVERALL", r.overall]].map(([label, seg]) => (
                             <div key={label} style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 6px" }}>
@@ -2519,6 +2570,34 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                           ))}
                         </div>
                       )}
+                      {/* Match play: running hole count */}
+                      {isStroke && (
+                        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                          <div style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 8px" }}>
+                            <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>RUNNING</div>
+                            <div style={{ fontWeight: "700", color: "var(--text)", fontSize: 15 }}>{segLabel(r.overall)}</div>
+                          </div>
+                          <div style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 8px" }}>
+                            <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>NET HOLES</div>
+                            <div style={{ fontWeight: "700", color: r.overall.status > 0 ? p1col : r.overall.status < 0 ? p2col : "var(--muted)", fontSize: 15 }}>
+                              {r.overall.status === 0 ? "AS" : `${r.overall.status > 0 ? "+" : ""}${r.overall.status}`}
+                            </div>
+                          </div>
+                          <div style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 8px" }}>
+                            <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>PROJ $</div>
+                            <div style={{ fontWeight: "700", color: r.overall.status > 0 ? p1col : r.overall.status < 0 ? p2col : "var(--muted)", fontSize: 15 }}>
+                              {r.overall.status === 0 ? "—" : `$${Math.abs(r.overall.status * m.stake)}`}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      {/* Press status */}
+                      {!isGDB && !isStroke && r.presses?.length > 0 && r.presses.map((p, pi) => (
+                        <div key={pi} style={{ marginTop: 6, background: "var(--input)", borderRadius: 6, padding: "6px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>PRESS {pi+1} (from H{p.startHole})</span>
+                          <span style={{ fontSize: 14, fontWeight: "700", color: "var(--text)" }}>{segLabel(p)}</span>
+                        </div>
+                      ))}
                       {/* GDB: Game + Dormie/Bye status */}
                       {isGDB && gdbSeg && (
                         <div style={{ marginTop: 8 }}>
@@ -2733,13 +2812,13 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
           {!isSolo && <><Sect title="Totals">
             <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
               {/* Header */}
-              <div style={{ display: "grid", gridTemplateColumns: `80px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
                 <div style={{ padding: "8px 10px", fontSize: 11, color: "#3a6a3a" }} />
                 {RP.map(i => <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 16, color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{names[i]}</div>)}
               </div>
               {[["Vegas","vegas",vegasCum,vegasVal],["Cut Throat","ct",ctCum,ctVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
-                <div key={label} style={{ display: "grid", gridTemplateColumns: `80px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+                <div key={label} style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ padding: "8px 6px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>{label}</div>
                   {RP.map(i => {
                     const v = cum[i]*val;
                     return <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 16, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
@@ -2747,7 +2826,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 </div>
               ))}
               {adjustments.some(a=>a!==0) && (
-                <div style={{ display: "grid", gridTemplateColumns: `80px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center" }}>Adj</div>
                   {RP.map(i => {
                     const v=adjustments[i];
@@ -2756,7 +2835,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 </div>
               )}
               {/* Subtotal — Vegas/CT/Banker */}
-              <div style={{ display: "grid", gridTemplateColumns: `80px repeat(${RP.length},1fr)`, background: "var(--card)", borderBottom: (matchupEnabled||games.six) ? "2px solid var(--border2)" : "none" }}>
+              <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, background: "var(--card)", borderBottom: (matchupEnabled||games.six) ? "2px solid var(--border2)" : "none" }}>
                 <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>
                   {(matchupEnabled||games.six) ? "Subtotal" : "TOTAL"}
                 </div>
@@ -2769,7 +2848,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               {games.six && sixCum && (() => {
                 const isMeal = sixVal === 0;
                 return (
-                  <div style={{ display: "grid", gridTemplateColumns: `80px repeat(${RP.length},1fr)`, borderBottom: matchupEnabled?"1px solid var(--border)":"none", background: isMeal?"var(--card)":"transparent" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, borderBottom: matchupEnabled?"1px solid var(--border)":"none", background: isMeal?"var(--card)":"transparent" }}>
                     <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
                       <div style={{ fontSize: 11, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>6-Point</div>
                       {isMeal
@@ -2793,8 +2872,8 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                   nassauPD[m.p2] -= r.dollars.net;
                 });
                 return (
-                  <div style={{ display: "grid", gridTemplateColumns: `80px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
-                    <div style={{ padding: "8px 10px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Matchup</div>
+                  <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ padding: "8px 6px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>Matchup</div>
                     {RP.map(i => {
                       const v = nassauPD[i];
                       return <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 16, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
@@ -2804,7 +2883,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               })()}
               {/* Grand total */}
               {(matchupEnabled || (games.six && sixVal > 0)) && (
-                <div style={{ display: "grid", gridTemplateColumns: `80px repeat(${RP.length},1fr)`, background: "var(--card)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, background: "var(--card)" }}>
                   <div style={{ padding: "10px 10px", fontSize: 12, color: "var(--text)", fontWeight: "700", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>TOTAL</div>
                   {RP.map(i => (
                     <div key={i} style={{ padding: "10px 4px", textAlign: "center", fontSize: 22, fontWeight: "700", color: dollars[i]>0?(isLight?"#16a34a":COLORS[0]):dollars[i]<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>
@@ -2818,7 +2897,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
           <CollapseSect title={`Next Round HCP (@ $${hcpThreshold}/stroke)`} open={showHcp} onToggle={() => setShowHcp(v=>!v)}>
             <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
               {[["Current HCP", liveHcps],["Adj", strokeAdj],["Adjusted", adjHcps],["New Rel HCP", newRelHcps]].map(([label, vals], ri) => (
-                <div key={label} style={{ display: "grid", gridTemplateColumns: `90px repeat(${RP.length},1fr)`, borderBottom: ri<3?"1px solid #0d2210":"none", background: ri===3?"#0d2210":"transparent" }}>
+                <div key={label} style={{ display: "grid", gridTemplateColumns: `72px repeat(${RP.length},1fr)`, borderBottom: ri<3?"1px solid #0d2210":"none", background: ri===3?"#0d2210":"transparent" }}>
                   <div style={{ padding: "8px 10px", fontSize: 11, color: ri===3?"#e8f5e8":"#5a8a5a", display: "flex", alignItems: "center", fontWeight: ri===3?"700":"400", fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
                   {RP.map(i => (
                     <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 14, color: ri===3?"#e8f5e8":ri===1?(vals[i]>0?COLORS[0]:vals[i]<0?"#f87171":"#4a7a4a"):"#aaa", fontWeight: ri===3?"700":"400", fontFamily: "'DM Sans', sans-serif" }}>
@@ -2913,16 +2992,17 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
       )}
             {tab === "vegas" && (
         <Sect title="Vegas — Hole by Hole">
-          <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
-            <div style={{ display: "grid", gridTemplateColumns: `28px 60px 44px 24px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
+          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+          <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", minWidth: 320 }}>
+            <div style={{ display: "grid", gridTemplateColumns: `28px 56px 40px 22px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
               {["H","Teams","Nums","×",...names.map(n=>n.slice(0,3))].map((h,i) => (
-                <div key={i} style={{ ...S.th, padding: "8px 4px", fontSize: i>3?14:11, fontWeight: i>3?"700":"500", color: i>3?(isLight?COLORS_LIGHT[i-4]:COLORS[i-4]):"var(--muted)" }}>{h}</div>
+                <div key={i} style={{ ...S.th, padding: "8px 2px", fontSize: i>3?14:11, fontWeight: i>3?"700":"500", color: i>3?(isLight?COLORS_LIGHT[i-4]:COLORS[i-4]):"var(--muted)" }}>{h}</div>
               ))}
             </div>
             {results.map((r, hi) => {
               const active = inPlay[hi];
               return (
-                <div key={hi} onClick={() => onHole(hi)} style={{ display: "grid", gridTemplateColumns: `28px 60px 44px 24px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)", cursor: "pointer", opacity: active?1:0.35 }}>
+                <div key={hi} onClick={() => onHole(hi)} style={{ display: "grid", gridTemplateColumns: `28px 56px 40px 22px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)", cursor: "pointer", opacity: active?1:0.35 }}>
                   <div style={S.td}>{hi+1}</div>
                   <div style={{ ...S.td, fontSize: 10 }}>{vTeams[hi][0].map(i=>names[i][0]).join("")}|{vTeams[hi][1].map(i=>names[i][0]).join("")}</div>
                   <div style={{ ...S.td, fontSize: 10 }}>{active&&r.vr?`${r.vr.effA}|${r.vr.effB}`:""}</div>
@@ -2931,11 +3011,12 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 </div>
               );
             })}
-            <div style={{ display: "grid", gridTemplateColumns: `28px 60px 44px 24px repeat(${RP.length},1fr)`, background: "var(--card)", borderTop: "1px solid var(--border)" }}>
-              <div style={{ ...S.td, fontWeight: "700", fontSize: 11 }} colSpan={4}>TOT</div>
+            <div style={{ display: "grid", gridTemplateColumns: `28px 56px 40px 22px repeat(${RP.length},1fr)`, background: "var(--card)", borderTop: "1px solid var(--border)" }}>
+              <div style={{ ...S.td, fontWeight: "700", fontSize: 11 }}>TOT</div>
               <div style={S.td} /><div style={S.td} /><div style={S.td} />
               {vegasCum.map((v,i) => <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: "700" }}>{v>0?"+":""}{v||"—"}</div>)}
             </div>
+          </div>
           </div>
         </Sect>
       )}
@@ -3044,11 +3125,12 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
             const p1col = isLight ? COLORS_LIGHT[m.p1] : COLORS[m.p1];
             const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
             const isGDB = m.type === "gdb";
+            const isStroke = m.type === "stroke";
             const net = r.dollars.net;
             function segRow(label, seg, dollarAmt) {
               if (!seg) return null;
               const { status, holesPlayed } = seg;
-              const statusText = holesPlayed === 0 ? "—"
+              const statusText = (holesPlayed !== undefined && holesPlayed === 0) ? "—"
                 : status === 0 ? "AS"
                 : `${status > 0 ? p1name : p2name} ${Math.abs(status)} UP`;
               const statusCol = status > 0 ? p1col : status < 0 ? p2col : "var(--dim)";
@@ -3068,7 +3150,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 {/* Header */}
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>
-                    MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : "NASSAU"}
+                    MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isStroke ? "MATCH PLAY" : "NASSAU"}
                   </div>
                   <div style={{ fontSize: 16, fontWeight: "800", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                     <span style={{ color: p1col }}>{p1name}</span> <span style={{ color: "var(--dim)", fontSize: 13 }}>vs</span> <span style={{ color: p2col }}>{p2name}</span>
@@ -3076,6 +3158,8 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                   <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>
                     {isGDB
                       ? `Game/Dormie/Bye · $${m.stake}/unit · max $${m.stake*5}/9`
+                      : isStroke
+                      ? `Match play · $${m.stake}/hole · net holes × stake`
                       : `${(m.units||[1,1,2]).join(":")} · $${m.stake}/unit`
                     } ·{" "}
                     {[["F", m.strokesFront], ["B", m.strokesBack]].map(([label, v]) => {
@@ -3087,14 +3171,38 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                   </div>
                 </div>
                 {/* Nassau rows */}
-                {!isGDB && (() => {
+                {!isGDB && !isStroke && (() => {
                   const { frontDollars, backDollars, overallDollars, pressDollars } = r.dollars;
                   const u = m.units||[1,1,2];
                   return <>
                     {u[0] > 0 && segRow(`Front 9 ×${u[0]}`, r.front, frontDollars)}
                     {u[1] > 0 && segRow(`Back 9 ×${u[1]}`, r.back, backDollars)}
                     {u[2] > 0 && segRow(`Overall ×${u[2]}`, r.overall, overallDollars)}
-                    {r.presses?.length > 0 && segRow(`Press ×${r.presses.length}`, { status: r.presses.reduce((s,p)=>s+p.status,0), holesPlayed: r.presses[0]?.holesPlayed||0 }, pressDollars)}
+                    {r.presses?.length > 0 && r.presses.map((p, pi) => {
+                      const pm = m.pressMult || 1;
+                      const pd = p.status === 0 ? 0 : p.status > 0 ? m.stake * pm : -m.stake * pm;
+                      return segRow(`Press ${pi+1} (from H${p.startHole})`, p, pd);
+                    })}
+                  </>;
+                })()}
+                {/* Match play rows */}
+                {isStroke && (() => {
+                  const s = r.overall.status;
+                  const holesW = s > 0 ? s : 0;
+                  const holesL = s < 0 ? Math.abs(s) : 0;
+                  return <>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                      <span style={{ fontSize: 12, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", width: 90 }}>Holes won</span>
+                      <span style={{ fontSize: 13, fontWeight: "600", color: s > 0 ? p1col : s < 0 ? p2col : "var(--dim)", fontFamily: "'DM Sans', sans-serif", flex: 1, textAlign: "center" }}>
+                        {s === 0 ? "AS" : `${s > 0 ? p1name : p2name} +${Math.abs(s)}`}
+                      </span>
+                      <span style={{ fontSize: 14, fontWeight: "700", color: s > 0 ? (isLight?"#16a34a":COLORS[0]) : s < 0 ? "var(--neg)" : "var(--dim)", fontFamily: "'DM Sans', sans-serif", width: 56, textAlign: "right" }}>
+                        {s === 0 ? "—" : `${s > 0 ? "+" : ""}$${Math.abs(s * m.stake)}`}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>
+                      Net holes × ${m.stake}/hole
+                    </div>
                   </>;
                 })()}
                 {/* GDB rows — per 9 */}
