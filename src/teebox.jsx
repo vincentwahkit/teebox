@@ -503,7 +503,7 @@ function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTe
     v: "1",
     c: (courseName||"Custom").replace(/[^\x20-\x7E]/g, '-').slice(0,30),
     d: new Date().toISOString().slice(0,10).replace(/-/g,""),
-    p: names.map(n=>n.slice(0,8)),
+    p: names.map(n=>n.replace(/[^\x20-\x7E]/g, '-').slice(0,8)),
     h: hcps,
     ho, sf,
     ip: ipMask,
