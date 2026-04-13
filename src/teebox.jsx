@@ -39,11 +39,11 @@ const HORIZON_HILLS_HOLES = [
 
 // NSRCC Changi Golf Course, Singapore — Blue tees, Par 72
 const NSRCC_CHANGI_HOLES = [
-  {par:4,si:4},{par:5,si:2},{par:5,si:10},{par:4,si:6},
-  {par:4,si:8},{par:3,si:16},{par:4,si:12},{par:4,si:14},
-  {par:3,si:18},{par:4,si:11},{par:4,si:1},{par:3,si:17},
-  {par:4,si:3},{par:5,si:5},{par:3,si:15},{par:4,si:9},
-  {par:4,si:13},{par:5,si:7},
+  {par:4,si:1},{par:5,si:13},{par:5,si:9},{par:4,si:3},
+  {par:4,si:11},{par:3,si:15},{par:4,si:7},{par:4,si:5},
+  {par:3,si:17},{par:4,si:18},{par:4,si:2},{par:3,si:16},
+  {par:4,si:6},{par:5,si:12},{par:3,si:8},{par:4,si:14},
+  {par:4,si:10},{par:5,si:4},
 ];
 
 // Sembawang Country Club — Front 9 x2, Composite 18, Blue tees
@@ -559,7 +559,7 @@ function haptic(style = "light") {
   } catch(_) {}
 }
 
-async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, sixCum, vegasVal, ctVal, p3Val, sixVal, adjustments, games, matchupEnabled, nassauResults, matchups, courseName, roundStartTime, qrPayload, playerCount }) {
+async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, sixCum, vegasVal, ctVal, p3Val, sixVal, adjustments, games, matchupEnabled, nassauResults, matchups, courseName, roundStartTime, qrPayload, playerCount, vTeams, banker, p3mult }) {
   const isSolo = playerCount === 1;
   const RP = names.map((_,i) => i);
   // Generate QR data URL if qrcode-generator library is loaded
@@ -622,6 +622,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   }
   // Build scorecard rows
   const RN = names.length;
+  const P_COLORS = ["#16a34a","#2563eb","#c2410c","#9333ea"];
   let scRows = "";
   let outTotals = Array(RN).fill(0), inTotals = Array(RN).fill(0), grandTotals = Array(RN).fill(0);
   let outPar = 0, inPar = 0;
@@ -629,6 +630,8 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     const h = holes[hi];
     const active = inPlay[hi];
     const rowStyle = active ? "" : "opacity:0.4;background:#f5f5f5;";
+    // Team 0 = player 1's team
+    const team0 = (vTeams && vTeams[hi]) ? vTeams[hi][0] : [0,1];
     let row = `<tr style="${rowStyle}">
       <td style="text-align:center;font-weight:600;color:#555">${hi+1}</td>
       <td style="text-align:center;color:#777">${h.par}</td>
@@ -640,31 +643,51 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
         if (hi < 9) outTotals[pi] += g; else inTotals[pi] += g;
         grandTotals[pi] += g;
       }
-      row += `<td style="text-align:center">${isNaN(g) ? "-" : scoreBadgeHtml(g, h.par, active)}</td>`;
+      const inTeam0 = team0.includes(pi);
+      const isP1 = pi === 0;
+      const isPartner = inTeam0 && !isP1;
+      const scoreHtml = isNaN(g) ? "-" : scoreBadgeHtml(g, h.par, active);
+      // Banker tags for par 3 holes
+      let bankerTag = "";
+      if (games.p3 && h.par === 3 && banker && p3mult) {
+        const isBanker = banker[hi] === pi;
+        const mult = p3mult[hi] ? p3mult[hi][pi] : 1;
+        if (isBanker) bankerTag = `<span style="font-size:8px;color:#c2410c;font-weight:700">B${mult>1?`×${mult}`:""}</span>`;
+        else bankerTag = `<span style="font-size:8px;color:#777;font-weight:500">${mult>1?`×${mult}`:"×1"}</span>`;
+      }
+      const suffix = (games.vegas && RN === 4) || (games.p3 && h.par === 3)
+        ? `<span style="display:inline-block;width:20px;text-align:center;vertical-align:middle">
+            <span style="display:block;text-align:center;height:10px;line-height:10px">${bankerTag}</span>
+            <span style="display:block;text-align:center;height:7px;line-height:7px">${isPartner ? `<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#333;vertical-align:middle"></span>` : ""}</span>
+           </span>`
+        : "";
+      row += `<td style="text-align:center;white-space:nowrap"><span style="display:inline-block;width:20px;text-align:center;vertical-align:middle">${scoreHtml}</span>${suffix}</td>`;
     }
     row += `</tr>`;
     scRows += row;
     if (hi < 9) outPar += h.par; else inPar += h.par;
     if (hi === 8) {
+      const hasSuffix = (games.vegas && RN === 4) || games.p3;
       scRows += `<tr style="background:#e8f5e8;font-weight:700">
         <td style="text-align:center">OUT</td>
         <td style="text-align:center">${outPar}</td>
         <td></td>
-        ${outTotals.map(t => `<td style="text-align:center">${t||"-"}</td>`).join("")}
+        ${outTotals.map(t => `<td style="text-align:center;white-space:nowrap"><span style="display:inline-block;width:20px;text-align:center">${t||"-"}</span>${hasSuffix?`<span style="display:inline-block;width:20px"></span>`:""}</td>`).join("")}
       </tr>`;
     }
   }
+  const hasSuffix = (games.vegas && RN === 4) || games.p3;
   scRows += `<tr style="background:#e8f5e8;font-weight:700">
     <td style="text-align:center">IN</td>
     <td style="text-align:center">${inPar}</td>
     <td></td>
-    ${inTotals.map(t => `<td style="text-align:center">${t||"-"}</td>`).join("")}
+    ${inTotals.map(t => `<td style="text-align:center;white-space:nowrap"><span style="display:inline-block;width:20px;text-align:center">${t||"-"}</span>${hasSuffix?`<span style="display:inline-block;width:20px"></span>`:""}</td>`).join("")}
   </tr>
   <tr style="background:#0a1a0a;color:#4ade80;font-weight:700">
     <td style="text-align:center">TOT</td>
     <td style="text-align:center">${outPar+inPar}</td>
     <td></td>
-    ${grandTotals.map(t => `<td style="text-align:center">${t||"-"}</td>`).join("")}
+    ${grandTotals.map(t => `<td style="text-align:center;white-space:nowrap"><span style="display:inline-block;width:20px;text-align:center">${t||"-"}</span>${hasSuffix?`<span style="display:inline-block;width:20px"></span>`:""}</td>`).join("")}
   </tr>`;
   const html = `<!DOCTYPE html>
 <html>
@@ -770,10 +793,17 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     </div>` : ""}
   </div>
   <h2>Scorecard (Gross)</h2>
+  ${games.vegas && RN === 4 ? `<div style="font-size:9px;color:#555;margin-bottom:2px">
+    <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#333;vertical-align:middle;margin-right:3px"></span>= paired with ${names[0]}
+  </div>` : ""}
+  ${games.p3 ? `<div style="font-size:9px;color:#555;margin-bottom:4px">
+    <span style="color:#c2410c;font-weight:700;margin-right:3px">B</span>= Banker &nbsp;
+    <span style="color:#9333ea;font-weight:700;margin-right:3px">×2/×3</span>= Multiplier called
+  </div>` : ""}
   <table class="scorecard">
     <tr>
       <th>H</th><th>Par</th><th>SI</th>
-      ${names.map(n=>`<th>${n.slice(0,Math.max(2,n.length))}</th>`).join("")}
+      ${(function(){ const hasSuffix2 = (games.vegas && RN === 4) || games.p3; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,Math.max(2,n.length))}</span>${hasSuffix2?`<span style="display:inline-block;width:20px"></span>`:""}</th>`).join(""); })()}
     </tr>
     ${scRows}
   </table>
@@ -845,7 +875,7 @@ function SplashContent({ onDone, isLight }) {
   const posts = [[rx0,ry0],[rx0+ringS,ry0],[rx0,ry0+ringS],[rx0+ringS,ry0+ringS]];
   const accent = "#4ade80";
   return (
-    <div style={{ minHeight:"100vh", background:"#0a1a0a", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:24, padding:"40px 20px" }}>
+    <div style={{ minHeight:"100vh", background:"#000", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:24, padding:"40px 20px" }}>
       <style>{`
         @keyframes tbRingAppear { 0%{opacity:0;transform:scale(0.5)} 30%{opacity:1;transform:scale(1.05)} 45%{transform:scale(0.97)} 55%{transform:scale(1)} 100%{opacity:1;transform:scale(1)} }
         @keyframes tbTeeLeft    { 0%{transform:translateX(-180px);opacity:0} 100%{transform:translateX(0);opacity:1} }
@@ -923,6 +953,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
   const [vegasVal, setVegasVal] = useState(1);
   const [ctVal, setCtVal] = useState(3);
   const [p3Val, setP3Val] = useState(5);
+  const [bankerNett, setBankerNett] = useState(true);
   const [sixVal, setSixVal] = useState(1);
   const [hcpThreshold, setHcpThreshold] = useState(25);
   const [courses, setCourses] = useState([]);
@@ -1366,6 +1397,16 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                 </div>
               );
             })}
+            {/* Banker nett toggle */}
+            {games.p3 && canP3 && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, paddingLeft: 46 }}>
+                <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Use nett scores</span>
+                <div onClick={() => setBankerNett(v => !v)}
+                  style={{ width: 44, height: 24, borderRadius: 12, background: bankerNett?"var(--accent)":"var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
+                  <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: bankerNett?23:3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+                </div>
+              </div>
+            )}
             {/* HCP adjustment — applies to Vegas/CT/Banker */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 8, marginTop: 2, marginBottom: 14, borderTop: "1px solid var(--border)" }}>
               <span style={{ fontSize: 14, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>HCP adjustment</span>
@@ -1630,7 +1671,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
               names: names.slice(0, playerCount).map((n,i) => n.trim()||`Player ${i+1}`),
               hcps: hcps.slice(0, playerCount),
               playerCount,
-              holes, vegasVal, ctVal, p3Val, hcpThreshold,
+              holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett,
               games: {
                 vegas: canVegas && games.vegas,
                 ct: canCT && games.ct,
@@ -1687,7 +1728,7 @@ function QRCodeDisplay({ payload, size = 300 }) {
 
 // SCORECARD
 function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
-  const { names, hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games } = config;
+  const { names, hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games, bankerNett = true } = config;
   const sixVal = config.sixVal ?? 1;
   const saved = config._savedState;
   const roundId = React.useRef(config._roundId || Date.now()).current;
@@ -1768,7 +1809,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     const vd = Array(N).fill(0);
     if (vr) { vTeams[hi][0].forEach(pi => { vd[pi]=vr.netA; }); vTeams[hi][1].forEach(pi => { vd[pi]=vr.netB; }); }
     const ct = games.ct ? computeCutThroat(n) : Array(N).fill(0);
-    const p3 = (games.p3 && h.par===3) ? computePar3(n, banker[hi], p3mult[hi]) : Array(N).fill(0);
+    const p3 = (games.p3 && h.par===3) ? computePar3(bankerNett ? n : g.map((gs,pi) => { const gv = parseInt(gs,10); return isNaN(gv)||gv<=0?null:gv; }), banker[hi], p3mult[hi]) : Array(N).fill(0);
     const six = (games.six && N === 3) ? compute6Point(n) : Array(N).fill(0);
     return { g, n, vr, vd, ct, p3, six };
   });
@@ -2591,7 +2632,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               };
               exportRound(roundData);
             }}
-            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, sixCum, vegasVal, ctVal, p3Val, sixVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
+            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, sixCum, vegasVal, ctVal, p3Val, sixVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vTeams, banker, p3mult }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
             onHole={hi => { setHoleIdx(hi); setView("hole"); }}
             isLight={isLight} />
         ))}
