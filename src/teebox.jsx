@@ -566,7 +566,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   let qrDataUrl = null;
   if (qrPayload && window.qrcode) {
     try {
-      const qr = window.qrcode(0, 'L');
+      const qr = window.qrcode(0, 'M');
       qr.addData(qrPayload);
       qr.make();
       const cellSize = 3;
@@ -1711,7 +1711,7 @@ function QRCodeDisplay({ payload, size = 300 }) {
     if (!loaded || !payload || !divRef.current) return;
     divRef.current.innerHTML = '';
     try {
-      const qr = window.qrcode(0, 'L'); // type 0 = auto version
+      const qr = window.qrcode(0, 'M'); // type 0 = auto version, M = better scan reliability
       qr.addData(payload);
       qr.make();
       const cellSize = Math.floor(size / (qr.getModuleCount() + 4));
@@ -3228,9 +3228,13 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
             <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
               <QRCodeDisplay payload={qrPayload} size={300} />
             </div>
-            <div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>
+            <div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>
               {qrPayload.length} chars · {names.join(" · ")}
             </div>
+            <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(qrPayload).then(() => alert("Copied!")); }}
+              style={{ padding: "6px 14px", background: "transparent", border: "1px solid var(--border2)", borderRadius: 8, color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+              📋 Copy Payload
+            </button>
           </div>
         </Sect>
       )}
