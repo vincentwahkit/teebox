@@ -1714,8 +1714,9 @@ function QRCodeDisplay({ payload, size = 300 }) {
       const qr = window.qrcode(0, 'M'); // type 0 = auto version, M = better scan reliability
       qr.addData(payload);
       qr.make();
-      const cellSize = Math.floor(size / (qr.getModuleCount() + 4));
-      divRef.current.innerHTML = qr.createImgTag(cellSize, 2);
+      const moduleCount = qr.getModuleCount();
+      const cellSize = Math.max(4, Math.floor(size / (moduleCount + 8)));
+      divRef.current.innerHTML = qr.createImgTag(cellSize, 4);
     } catch(e) { setErr('QR error: ' + e.message); }
   }, [loaded, payload, size]);
   if (err) return <div style={{color:'var(--neg)',fontSize:12,padding:8}}>{err}</div>;
