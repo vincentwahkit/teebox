@@ -946,19 +946,22 @@ function SplashContent({ onDone, isLight }) {
 }
 
 // SETUP
-function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme }) {
+function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound }) {
+  const sc = savedConfig; // shorthand
   const [playerCount, setPlayerCount] = useState(() => {
+    if (sc) return sc.playerCount || 4;
     try { return parseInt(localStorage.getItem("sws_playercount") || "4"); } catch { return 4; }
   });
   const [names, setNames] = useState(() => {
+    if (sc) return sc.names || ["A","B","C","D"];
     try {
       const saved = JSON.parse(localStorage.getItem("sws_names") || '["A","B","C","D"]');
-      // Ensure always 4 slots
       while (saved.length < 4) saved.push(`P${saved.length+1}`);
       return saved;
     } catch { return ["A","B","C","D"]; }
   });
   const [hcps, setHcps] = useState(() => {
+    if (sc) return sc.hcps || [0,0,0,0];
     try {
       const saved = JSON.parse(localStorage.getItem("sws_hcps") || "[0,0,0,0]");
       while (saved.length < 4) saved.push(0);
@@ -966,18 +969,19 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
     } catch { return [0,0,0,0]; }
   });
   const [holes, setHoles] = useState(() => {
+    if (sc) return sc.holes.map(h => ({ ...h }));
     try {
       const saved = localStorage.getItem("sws_lastcourse");
       if (saved) { const c = JSON.parse(saved); return c.holes.map(h => ({ ...h })); }
     } catch(_) {}
     return DEFAULT_HOLES.map(h => ({ ...h }));
   });
-  const [vegasVal, setVegasVal] = useState(1);
-  const [ctVal, setCtVal] = useState(3);
-  const [p3Val, setP3Val] = useState(5);
-  const [bankerNett, setBankerNett] = useState(true);
-  const [sixVal, setSixVal] = useState(1);
-  const [hcpThreshold, setHcpThreshold] = useState(25);
+  const [vegasVal, setVegasVal] = useState(sc?.vegasVal ?? 1);
+  const [ctVal, setCtVal] = useState(sc?.ctVal ?? 3);
+  const [p3Val, setP3Val] = useState(sc?.p3Val ?? 5);
+  const [bankerNett, setBankerNett] = useState(sc?.bankerNett ?? true);
+  const [sixVal, setSixVal] = useState(sc?.sixVal ?? 1);
+  const [hcpThreshold, setHcpThreshold] = useState(sc?.hcpThreshold ?? 25);
   const [courses, setCourses] = useState([]);
   const [showLib, setShowLib] = useState(false);
   const [saveName, setSaveName] = useState("");
@@ -988,20 +992,21 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
   const [storageMsg, setStorageMsg] = useState("");
   const [saveError, setSaveError] = useState("");
   const [loadedCourse, setLoadedCourse] = useState(() => {
+    if (sc) return { name: sc.courseName || "Custom", tee: "", holes: sc.holes };
     try {
       const saved = localStorage.getItem("sws_lastcourse");
       if (saved) {
         const c = JSON.parse(saved);
-        // Try to match against presets first
         const preset = PRESET_COURSES.find(p => p.id === c.id);
         return preset || c;
       }
     } catch(_) {}
     return PRESET_COURSES[0];
   });
-  const [games, setGames] = useState({ vegas: true, ct: true, p3: true, six: false });
-  // Auto-adjust game defaults when player count changes
+  const [games, setGames] = useState(sc?.games || { vegas: true, ct: true, p3: true, six: false });
+  // Auto-adjust game defaults when player count changes — only if not restoring from config
   React.useEffect(() => {
+    if (sc) return; // don't override restored games
     if (playerCount === 3) setGames(g => ({ ...g, vegas: false, ct: false, p3: false, six: true }));
     if (playerCount === 4) setGames(g => ({ ...g, vegas: true, ct: true, p3: true, six: false }));
     if (playerCount <= 2) setGames(g => ({ ...g, vegas: false, six: false }));
@@ -1012,7 +1017,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
   const canP3    = playerCount >= 2;
   const canMatchup = playerCount >= 2;
   const canSix   = playerCount === 3;
-  const [matchupBets, setMatchupBets] = useState({ on: false, matchups: DEFAULT_MATCHUP.map(m => ({ ...m })) });
+  const [matchupBets, setMatchupBets] = useState(sc?.nassau || { on: false, matchups: DEFAULT_MATCHUP.map(m => ({ ...m })) });
   const [importPreview, setImportPreview] = useState(null);
   const [activeSection, setActiveSection] = useState(null);
   const [startError, setStartError] = useState("");
@@ -1186,17 +1191,32 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                   if (cfg.games.ct){const ct=computeCutThroat(n);Array.from({length:_NP},(_,p)=>p).forEach(p=>cCum[p]+=ct[p]);}
                   if (cfg.games.p3&&h.par===3){const p3=computePar3(n,ss.banker[hi],ss.p3mult[hi]);Array.from({length:_NP},(_,p)=>p).forEach(p=>pCum[p]+=p3[p]);}
                 });
-                const d=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments[pi]||0);
+                const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments?.[pi]||0);
+                // Nassau
+                let nassauD = 0;
+                if (cfg.nassau?.on && ss.matchups) {
+                  ss.matchups.forEach(m => {
+                    const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
+                    const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
+                    if (m.p1 === pi) nassauD += dol.net;
+                    if (m.p2 === pi) nassauD -= dol.net;
+                  });
+                }
+                const d = subtotal + nassauD;
+                // Relative HCP
+                const minHcp = Math.min(...ss.liveHcps);
+                const relHcp = ss.liveHcps[pi] - minHcp;
                 return (
                   <div key={pi} style={{ background: "var(--input)", borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
-                    <div style={{ fontSize: 11, color: COLORS[pi], marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{name.slice(0,5)}</div>
-                    <div style={{ fontSize: 18, fontWeight: "700", color: d>0?COLORS[0]:d<0?"#f87171":"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
+                    <div style={{ fontSize: 11, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{name.slice(0,5)}</div>
+                    <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>HCP {relHcp}</div>
+                    <div style={{ fontSize: 18, fontWeight: "700", color: d>0?(isLight?"#16a34a":COLORS[0]):d<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
                   </div>
                 );
               })}
             </div>
             <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => { onLoadRound(importPreview); setImportPreview(null); }}
+              <button onClick={() => { window.scrollTo(0,0); onLoadRound(importPreview); setImportPreview(null); }}
                 style={{ ...S.startBtn, flex: 2, fontSize: 15, padding: "13px" }}>Load Round</button>
               <button onClick={() => setImportPreview(null)}
                 style={{ ...S.startBtn, flex: 1, fontSize: 15, padding: "13px", background: "var(--border)", color: "var(--accent)" }}>Cancel</button>
@@ -1207,7 +1227,15 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 40px" }}>
         {/* Header */}
         <div style={{ position: "relative", textAlign: "center", padding: "24px 20px 16px", background: isLight ? "linear-gradient(180deg, #e8f5e8 0%, #f8faf8 100%)" : "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
-          <div style={{ position: "absolute", top: 8, right: 12, fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.0.0</div>
+          <div style={{ position: "absolute", top: 8, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+            <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.0.0</span>
+            <div onClick={toggleTheme} title={isLight ? "Switch to Night Mode" : "Switch to Outdoor Mode"}
+              style={{ width: 36, height: 20, borderRadius: 10, background: isLight ? COLORS[0] : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
+              <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isLight ? 18 : 2, transition: "left 0.2s" }}>
+                <span style={{ position: "absolute", fontSize: 9, top: 1, left: isLight ? 0 : 1 }}>{isLight ? "☀" : "🌙"}</span>
+              </div>
+            </div>
+          </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
             <TeeBoxLogo size={44} />
             <div style={{ textAlign: "left" }}>
@@ -1217,7 +1245,20 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
           </div>
         </div>
         <div style={{ padding: "12px 16px 100px" }}>
-          {/* ── Players & Handicaps ── */}
+          {/* ── Saved scores banner ── */}
+          {savedScores && (
+            <div style={{ background: "var(--card)", border: "1px solid var(--accent)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 20 }}>♻️</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: "700", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>Scores preserved</div>
+                <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>Change settings then START ROUND</div>
+              </div>
+              <button onClick={() => onNewRound && onNewRound()}
+                style={{ background: "#3a1a1a", color: "var(--neg)", border: "1px solid #5a2a2a", borderRadius: 8, fontSize: 13, padding: "6px 10px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>
+                🗑 New Round
+              </button>
+            </div>
+          )}
           <Sect title="Players & Handicaps">
             {/* Player count selector */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -1670,10 +1711,25 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
                         if(cfg.games.ct){const ct=computeCutThroat(n);Array.from({length:_NP},(_,p)=>p).forEach(p=>cCum[p]+=ct[p]);}
                         if(cfg.games.p3&&h.par===3){const p3=computePar3(n,ss.banker[hi],ss.p3mult[hi]);Array.from({length:_NP},(_,p)=>p).forEach(p=>pCum[p]+=p3[p]);}
                       });
-                      const d=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments[pi]||0);
+                      const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments?.[pi]||0);
+                      // Nassau
+                      let nassauD = 0;
+                      if (cfg.nassau?.on && ss.matchups) {
+                        ss.matchups.forEach(m => {
+                          const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
+                          const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
+                          if (m.p1 === pi) nassauD += dol.net;
+                          if (m.p2 === pi) nassauD -= dol.net;
+                        });
+                      }
+                      const d = subtotal + nassauD;
+                      // Relative HCP
+                      const minHcp = Math.min(...ss.liveHcps);
+                      const relHcp = ss.liveHcps[pi] - minHcp;
                       return (
                         <div key={pi} style={{ textAlign: "center", background: "var(--card)", borderRadius: 6, padding: "6px 4px" }}>
                           <div style={{ fontSize: 13, fontWeight: "700", color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>{name.slice(0,5)}</div>
+                          <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>HCP {relHcp}</div>
                           <div style={{ fontSize: 17, fontWeight: "700", color: d>0?(isLight?"#16a34a":COLORS[0]):d<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
                         </div>
                       );
@@ -1731,8 +1787,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme })
               },
               nassau: matchupBets,
               sixVal,
-              courseName: loadedCourse ? `${loadedCourse.name} — ${loadedCourse.tee}` : "Custom Course"
+              courseName: loadedCourse ? `${loadedCourse.name} — ${loadedCourse.tee}` : "Custom Course",
+              _savedScores: savedScores || null,
             });
+            window.scrollTo(0, 0);
           }}>
           START ROUND →
         </button>
@@ -1780,28 +1838,33 @@ function QRCodeDisplay({ payload, size = 300 }) {
 
 // SCORECARD
 function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
-  const { names, hcps, holes, vegasVal, ctVal, p3Val, hcpThreshold, games, bankerNett = true } = config;
-  const sixVal = config.sixVal ?? 1;
+  const { names, hcps, holes, games, bankerNett = true } = config;
+  const [vegasVal, setVegasVal] = useState(config.vegasVal ?? 1);
+  const [ctVal, setCtVal] = useState(config.ctVal ?? 3);
+  const [p3Val, setP3Val] = useState(config.p3Val ?? 5);
+  const [sixVal, setSixVal] = useState(config.sixVal ?? 1);
+  const [hcpThreshold, setHcpThreshold] = useState(config.hcpThreshold ?? 25);
   const saved = config._savedState;
+  const savedScores = config._savedScores; // from mid-round back to setup
   const roundId = React.useRef(config._roundId || Date.now()).current;
   const N = config.playerCount || names.length || 4;
-  const players = Array.from({length: N}, (_, i) => i); // [0..N-1]
-  const [gross, setGross] = useState(() => saved?.gross || Array.from({length:18}, (_, hi) => Array(N).fill(String(holes[hi].par))));
-  const [vTeams, setVTeams] = useState(() => saved?.vTeams || Array.from({length:18}, () => [[0,1],[2,3]]));
-  const [banker, setBanker] = useState(() => saved?.banker || Array(18).fill(0));
-  const [p3mult, setP3mult] = useState(() => saved?.p3mult || Array.from({length:18}, () => Array(N).fill(1)));
-  const [holeIdx, setHoleIdx] = useState(saved?.holeIdx || 0);
-  const [inPlay, setInPlay] = useState(() => saved?.inPlay || Array(18).fill(false));
+  const players = Array.from({length: N}, (_, i) => i);
+  const [gross, setGross] = useState(() => savedScores?.gross || saved?.gross || Array.from({length:18}, (_, hi) => Array(N).fill(String(holes[hi].par))));
+  const [vTeams, setVTeams] = useState(() => savedScores?.vTeams || saved?.vTeams || Array.from({length:18}, () => [[0,1],[2,3]]));
+  const [banker, setBanker] = useState(() => savedScores?.banker || saved?.banker || Array(18).fill(0));
+  const [p3mult, setP3mult] = useState(() => savedScores?.p3mult || saved?.p3mult || Array.from({length:18}, () => Array(N).fill(1)));
+  const [holeIdx, setHoleIdx] = useState(0);
+  const [inPlay, setInPlay] = useState(() => savedScores?.inPlay || saved?.inPlay || Array(18).fill(false));
   const [roundStartTime, setRoundStartTime] = useState(() => saved?.roundStartTime || null);
-  const [liveHcps, setLiveHcps] = useState(() => saved?.liveHcps || [...hcps]);
-  const [liveNames, setLiveNames] = useState(() => saved?.liveNames || [...names]);
+  const [liveHcps, setLiveHcps] = useState(() => saved?.liveHcps ? [...saved.liveHcps] : [...hcps]);
+  const [liveNames, setLiveNames] = useState(() => saved?.liveNames ? [...saved.liveNames] : [...names]);
   const [view, setView] = useState("hole");
   const [confirmBack, setConfirmBack] = useState(false);
-  const [adjustments, setAdjustments] = useState(saved?.adjustments || Array(N).fill(0));
+  const [adjustments, setAdjustments] = useState(savedScores?.adjustments || saved?.adjustments || Array(N).fill(0));
   const [saveMsg, setSaveMsg] = useState("");
   const matchupEnabled = !!config.nassau?.on;
   const [matchups, setMatchups] = useState(() =>
-    saved?.nassauMatchups || (config.nassau?.matchups || DEFAULT_MATCHUP).map(m => ({ ...m }))
+    (config.nassau?.matchups || DEFAULT_MATCHUP).map(m => ({ ...m }))
   );
   const [showBackStrokeModal, setShowBackStrokeModal] = useState(false);
   const [reportHTML, setReportHTML] = useState(null);
@@ -1819,8 +1882,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     // Swipe horizontally anywhere on screen to navigate holes
     // Only trigger if horizontal movement is dominant and exceeds 60px threshold
     if (Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 60) {
-      if (dx < 0 && holeIdx < 17) { haptic("medium"); setHoleIdx(h => h + 1); }
-      if (dx > 0 && holeIdx > 0) { haptic("medium"); setHoleIdx(h => h - 1); }
+      if (dx < 0 && holeIdx < 17) { haptic("medium"); setHoleIdx(h => { const next = h + 1; if (!inPlay[next]) window.scrollTo(0,0); return next; }); }
+      if (dx > 0 && holeIdx > 0) { haptic("medium"); setHoleIdx(h => { const next = h - 1; if (!inPlay[next]) window.scrollTo(0,0); return next; }); }
     }
     touchStartX.current = null;
     touchStartY.current = null;
@@ -2054,7 +2117,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: "var(--dim)", letterSpacing: 2 }}>HOLE</span>
             <select value={holeIdx} style={{ ...S.sel, fontSize: 22, fontWeight: "bold", color: "var(--text)", padding: "2px 8px", fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 1 }}
-              onChange={e => { setHoleIdx(Number(e.target.value)); setView("hole"); }}>
+              onChange={e => { const i = Number(e.target.value); if (!inPlay[i]) window.scrollTo(0,0); setHoleIdx(i); setView("hole"); }}>
               {Array.from({length:18}, (_,i) => (
                 <option key={i} value={i}>{i+1}{inPlay[i] ? " ✓" : ""}</option>
               ))}
@@ -2065,20 +2128,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
-            {/* Day/Night toggle in header */}
-            <div onClick={toggleTheme} title={isLight ? "Switch to Night Mode" : "Switch to Outdoor Mode"}
-              style={{ width: 36, height: 20, borderRadius: 10, background: isLight ? COLORS[0] : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
-              <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isLight ? 18 : 2, transition: "left 0.2s" }}>
-                <span style={{ position: "absolute", fontSize: 9, top: 1, left: isLight ? 0 : 1 }}>{isLight ? "☀" : "🌙"}</span>
-              </div>
-            </div>
-            {[["hole","HOLE"],["totals","$"],["setup","🏠"]].map(([v,label]) => (
-              <button key={v} className="tab-btn" onClick={() => setView(v)}
+            {[["hole","HOLE"],["totals","$"]].map(([v,label]) => (
+              <button key={v} className="tab-btn" onClick={() => { setView(v); window.scrollTo(0,0); }}
                 style={{
                   padding: v==="totals" ? "8px 18px" : "6px 10px",
                   borderRadius: 6,
-                  fontSize: v==="totals" ? 20 : v==="setup" ? 16 : 11,
-                  letterSpacing: v==="setup" ? 0 : 1,
+                  fontSize: v==="totals" ? 20 : 11,
+                  letterSpacing: 1,
                   cursor: "pointer", transition: "all 0.15s",
                   border: `1px solid ${view===v ? COLORS[0] : "var(--border)"}`,
                   background: view===v ? COLORS[0] : "transparent",
@@ -2087,6 +2143,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 {label}
               </button>
             ))}
+            <button className="tab-btn" onClick={() => { window.scrollTo(0,0); onBack({ gross, vTeams, banker, p3mult, inPlay, liveHcps, liveNames, adjustments, matchups, holeIdx }); }}
+              style={{ padding: "6px 10px", borderRadius: 6, fontSize: 16, cursor: "pointer", transition: "all 0.15s", border: "1px solid var(--border)", background: "transparent", color: "var(--dim)" }}>
+              🏠
+            </button>
           </div>
         </div>
         {/* Hole progress pills */}
@@ -2107,7 +2167,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   ? (isPar3 ? (isLight?"#ffffff":"#60a5fa") : (isLight?"#ffffff":COLORS[0]))
                   : (isPar3 ? (isLight?"#1e40af":"#2a5a7a") : (isLight?"#555555":"#3a5a3a"));
               return (
-                <div key={i} onClick={() => { setHoleIdx(i); setView("hole"); }}
+                <div key={i} onClick={() => { if (!inPlay[i]) window.scrollTo(0,0); setHoleIdx(i); setView("hole"); }}
                   style={{ flex: 1, height: 20, borderRadius: 3, cursor: "pointer",
                     transition: "all 0.2s", background: bg, display: "flex", alignItems: "center", justifyContent: "center",
                     border: isPar3 ? `1px solid ${isCurrent?(isLight?"#16a34a":COLORS[0]):(isLight?"#1e40af":"#1a4a6a")}` : "none",
@@ -2141,41 +2201,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         )}
       </div>
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px" }}>
-        {view === "setup" && (
-          <>
-            <Sect title="Players">
-              {players.map(pi => (
-                <div key={pi} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                  <div style={{ ...S.dot, background: isLight ? COLORS_LIGHT[pi] : COLORS[pi], flexShrink: 0 }}>{liveNames[pi][0]}</div>
-                  <input value={liveNames[pi]}
-                    style={{ ...S.inp, flex: 2, fontSize: 15, padding: "8px 10px" }}
-                    onChange={e => { const n=[...liveNames]; n[pi]=e.target.value; setLiveNames(n); try{localStorage.setItem("sws_names",JSON.stringify(n));}catch(_){} }} />
-                  <div style={{ display: "flex", alignItems: "center", gap: 0, background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-                    <button className="pm-btn" onClick={() => { const n=[...liveHcps]; n[pi]=Math.max(0,n[pi]-1); setLiveHcps(n); }} style={S.pmBtnInline}>−</button>
-                    <span style={{ width: 36, textAlign: "center", color: "var(--text)", fontSize: 18, fontWeight: "700" }}>{liveHcps[pi]}</span>
-                    <button className="pm-btn" onClick={() => { const n=[...liveHcps]; n[pi]=Math.min(36,n[pi]+1); setLiveHcps(n); }} style={S.pmBtnInline}>+</button>
-                  </div>
-                </div>
-              ))}
-              <p style={{ fontSize: 11, color: "#3a6a3a", margin: "2px 0 0", fontFamily: "'DM Sans', sans-serif" }}>Changes apply immediately</p>
-            </Sect>
-            <div style={{ borderTop: "1px solid var(--border)", paddingTop: 16, marginTop: 8 }}>
-              {!confirmBack ? (
-                <button style={{ ...S.startBtn, background: "#3a1a1a", color: "var(--neg)", border: "1px solid #5a2a2a" }}
-                  onClick={() => setConfirmBack(true)}>← Back to Home</button>
-              ) : (
-                <div style={{ background: "#3a1a1a", border: "1px solid #f87171", borderRadius: 10, padding: 16 }}>
-                  <div style={{ color: "var(--neg)", fontSize: 14, marginBottom: 12 }}>⚠️ All scores will be lost!</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button style={{ ...S.startBtn, background: "#f87171", color: "#fff", fontSize: 15, flex: 1 }} onClick={onBack}>Yes, go back</button>
-                    <button style={{ ...S.startBtn, background: "var(--border)", color: "var(--accent)", fontSize: 15, flex: 1 }} onClick={() => setConfirmBack(false)}>Cancel</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
-        )}
-        {view !== "setup" && (view === "hole" ? (
+        {view === "hole" ? (
           <>
             {/* Score entry — large touch targets */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
@@ -2714,7 +2740,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               exportRound(roundData);
             }}
             onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, sixCum, vegasVal, ctVal, p3Val, sixVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vTeams, banker, p3mult }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
-            onHole={hi => { setHoleIdx(hi); setView("hole"); }}
+            onHole={hi => { if (!inPlay[hi]) window.scrollTo(0,0); setHoleIdx(hi); setView("hole"); }}
             isLight={isLight} />
         ))}
       </div>
@@ -2722,7 +2748,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "var(--bg)", borderTop: "1px solid var(--border)", padding: "10px 16px 10px", display: "flex", gap: 10, maxWidth: 480, margin: "0 auto" }}>
           <button className="hole-nav"
             disabled={holeIdx===0}
-            onClick={() => setHoleIdx(h=>h-1)}
+            onClick={() => { const next = holeIdx-1; if (!inPlay[next]) window.scrollTo(0,0); setHoleIdx(next); }}
             style={{ flex: 1, padding: "14px", background: "var(--card)", color: holeIdx===0?"var(--border)":"var(--accent)", border: `1px solid ${holeIdx===0?"var(--border)":"var(--border2)"}`, borderRadius: 10, cursor: holeIdx===0?"default":"pointer", fontSize: 15, fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2, transition: "all 0.15s" }}>
             ← PREV
           </button>
@@ -2732,7 +2758,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           </div>
           <button className="hole-nav"
             disabled={holeIdx===17}
-            onClick={() => setHoleIdx(h=>h+1)}
+            onClick={() => { const next = holeIdx+1; if (!inPlay[next]) window.scrollTo(0,0); setHoleIdx(next); }}
             style={{ flex: 1, padding: "14px", background: "var(--border)", color: holeIdx===17?"var(--border)":"var(--accent)", border: `1px solid ${holeIdx===17?"var(--border)":"var(--border2)"}`, borderRadius: 10, cursor: holeIdx===17?"default":"pointer", fontSize: 15, fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2, transition: "all 0.15s" }}>
             NEXT →
           </button>
@@ -3461,6 +3487,8 @@ const S = {
 // SLOW REVEAL COMPONENT
 export default function App() {
   const [config, setConfig] = useState(null);
+  const [savedScores, setSavedScores] = useState(null);
+  const [savedConfig, setSavedConfig] = useState(null);
   const [showSplash, setShowSplash] = useState(true);
   const [savedRounds, setSavedRounds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("sws_rounds") || "[]"); } catch { return []; }
@@ -3490,6 +3518,7 @@ export default function App() {
   }
   function loadRound(round) {
     setConfig(round.config);
+    window.scrollTo(0, 0);
     // Remember course from resumed round
     if (round.config.courseName) {
       try { localStorage.setItem("sws_lastcourse", JSON.stringify({ name: round.config.courseName, tee: "", holes: round.config.holes })); } catch(_) {}
@@ -3497,6 +3526,6 @@ export default function App() {
   }
   if (showSplash) return <SplashContent onDone={() => setShowSplash(false)} isLight={isLight} />;
   return config
-    ? <Scorecard config={config} onBack={() => setConfig(null)} onSave={saveRound} isLight={isLight} toggleTheme={toggleTheme} />
-    : <Setup onStart={setConfig} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} />;
+    ? <Scorecard config={config} onBack={(scores) => { setSavedScores(scores || null); setSavedConfig(config); setConfig(null); }} onSave={saveRound} isLight={isLight} toggleTheme={toggleTheme} />
+    : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} />;
 }
