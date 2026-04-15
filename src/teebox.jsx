@@ -809,7 +809,11 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       <h2>$$$ Summary</h2>
       <table>
         <tr><th style="text-align:left"></th>${names.map(n=>`<th>${n.slice(0,5)}</th>`).join("")}</tr>
-        ${games.vegas ? `<tr><td class="label">Vegas</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}        ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}        ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}        ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}        <tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.vegas||games.ct||games.p3)&&(games.six||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>
+        ${games.vegas ? `<tr><td class="label">Vegas</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
+        ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
+        ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
+        ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
+        <tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.vegas||games.ct||games.p3)&&(games.six||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>
         ${games.six && sixCum ? `<tr><td class="label">6-Pt${sixVal===0?" (pts)":""}</td>${RP.map(i=>{const v=sixVal>0?RP.reduce((s,j)=>j!==i?s+(sixCum[i]-sixCum[j])*sixVal:s,0):sixCum[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${sixVal===0?v+"pts":v>0?"+"+v:v||"—"}</td>`;}).join("")}</tr>`:""} 
         ${matchupEnabled ? `<tr><td class="label">Matchup</td>${(()=>{const nd=Array(RP.length).fill(0);(nassauResults||[]).forEach((r,mi)=>{const m=matchups[mi];nd[m.p1]+=r.dollars.net;nd[m.p2]-=r.dollars.net;});return nd.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("");})()}</tr>`:""} 
         ${(matchupEnabled||(games.six&&sixVal>0)) ? `<tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>` : ""}
@@ -2621,13 +2625,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
                   const isGDB = m.type === "gdb";
                   const isStroke = m.type === "stroke";
-                  function segLabel(seg) {
+                  const segLabel = (seg) => {
                     if (!seg || seg.holesPlayed === 0) return <span style={{ color: "var(--text)", fontWeight: "600" }}>—</span>;
                     if (seg.status === 0) return <span style={{ color: "var(--text)", fontWeight: "700" }}>AS</span>;
                     const col = seg.status > 0 ? p1col : p2col;
                     const name = seg.status > 0 ? liveNames[m.p1] : liveNames[m.p2];
                     return <span style={{ color: col, fontWeight: "700" }}>{name} {Math.abs(seg.status)} UP</span>;
-                  }
+                  };
                   // GDB segment from the current 9
                   const gdbSeg = isGDB ? (holeIdx < 9 ? r.front : r.back) : null;
                   return (
@@ -2843,7 +2847,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, sixCum, vegasVal, ctVal, p3Val, sixVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vegasPlayers: vp, vTeams, banker, p3mult }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
             onHole={hi => { if (!inPlay[hi]) window.scrollTo(0,0); setHoleIdx(hi); setView("hole"); }}
             isLight={isLight} />
-        ))}
+        )}
       </div>
         {view === "hole" && (
         <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "var(--bg)", borderTop: "1px solid var(--border)", padding: "10px 16px 10px", display: "flex", gap: 10, maxWidth: 480, margin: "0 auto" }}>
