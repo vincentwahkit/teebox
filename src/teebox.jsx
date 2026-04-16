@@ -988,6 +988,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [ctVal, setCtVal] = useState(sc?.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(sc?.p3Val ?? 5);
   const [bankerNett, setBankerNett] = useState(sc?.bankerNett ?? true);
+  const [hcpCap, setHcpCap] = useState(sc?.hcpCap ?? null);
   const [sixVal, setSixVal] = useState(sc?.sixVal ?? 1);
   const [hcpThreshold, setHcpThreshold] = useState(sc?.hcpThreshold ?? 25);
   const [courses, setCourses] = useState([]);
@@ -1202,23 +1203,36 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 const ss = cfg._savedState;
                 if (!ss) return <div key={pi} />;
                 const _NP=ss.liveHcps.length;const vCum=Array(_NP).fill(0),cCum=Array(_NP).fill(0),pCum=Array(_NP).fill(0);
+                const _vp=cfg.vegasPlayers||[0,1,2,3];
                 cfg.holes.forEach((h,hi) => {
                   if (!ss.inPlay[hi]) return;
                   const g=ss.gross[hi];
                   const n=Array.from({length:_NP},(_,p)=>nettScore(g[p],ss.liveHcps[p],h.si,h.par));
                   if (cfg.games.vegas){const vr=computeVegas(ss.vTeams[hi],g,n,h.par);if(vr){ss.vTeams[hi][0].forEach(p=>{vCum[p]+=vr.netA;});ss.vTeams[hi][1].forEach(p=>{vCum[p]+=vr.netB;});}}
-                  if (cfg.games.ct){const ct=computeCutThroat(n);Array.from({length:_NP},(_,p)=>p).forEach(p=>cCum[p]+=ct[p]);}
-                  if (cfg.games.p3&&h.par===3){const p3=computePar3(n,ss.banker[hi],ss.p3mult[hi]);Array.from({length:_NP},(_,p)=>p).forEach(p=>pCum[p]+=p3[p]);}
+                  if (cfg.games.ct){const vpN=_vp.map(p=>n[p]);const ct=computeCutThroat(vpN);_vp.forEach((p,idx)=>cCum[p]+=ct[idx]);}
+                  if (cfg.games.p3&&h.par===3){const vpN=_vp.map(p=>n[p]);const vpBi=_vp.indexOf(ss.banker[hi])>=0?_vp.indexOf(ss.banker[hi]):0;const vpM=_vp.map(p=>ss.p3mult[hi]?.[p]||1);const p3=computePar3(vpN,vpBi,vpM);_vp.forEach((p,idx)=>pCum[p]+=p3[idx]);}
                 });
                 const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments?.[pi]||0);
                 // Nassau
                 let nassauD = 0;
                 if (cfg.nassau?.on && ss.matchups) {
                   ss.matchups.forEach(m => {
-                    const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
-                    const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
-                    if (m.p1 === pi) nassauD += dol.net;
-                    if (m.p2 === pi) nassauD -= dol.net;
+                    let net = 0;
+                    const type = m.type || "nassau";
+                    if (type === "gdb") {
+                      const r = computeGDB(m, ss.gross, cfg.holes, ss.inPlay);
+                      const dol = gdbDollars(m, r.front, r.back);
+                      net = dol.net;
+                    } else if (type === "stroke") {
+                      const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
+                      net = r.overall.status !== 0 ? (r.overall.status > 0 ? 1 : -1) * m.stake * Math.abs(r.overall.status) : 0;
+                    } else {
+                      const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
+                      const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
+                      net = dol.net;
+                    }
+                    if (m.p1 === pi) nassauD += net;
+                    if (m.p2 === pi) nassauD -= net;
                   });
                 }
                 const d = subtotal + nassauD;
@@ -1521,6 +1535,28 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 </div>
               </div>
             )}
+            {/* HCP Cap — Vegas/CT/Banker only */}
+            {canVegas && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, paddingLeft: 46 }}>
+                <div>
+                  <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>HCP cap </span>
+                  <span style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>(Vegas/CT/Banker)</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div onClick={() => setHcpCap(v => v === null ? 24 : null)}
+                    style={{ width: 44, height: 24, borderRadius: 12, background: hcpCap!==null?"var(--accent)":"var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
+                    <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: hcpCap!==null?23:3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+                  </div>
+                  {hcpCap !== null && (
+                    <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                      <button className="pm-btn" onClick={() => setHcpCap(v => Math.max(1, v-1))} style={S.pmBtnInline}>−</button>
+                      <span style={{ width: 36, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{hcpCap}</span>
+                      <button className="pm-btn" onClick={() => setHcpCap(v => v+1)} style={S.pmBtnInline}>+</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
             {/* HCP adjustment — applies to Vegas/CT/Banker */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 8, marginTop: 2, marginBottom: 14, borderTop: "1px solid var(--border)" }}>
               <span style={{ fontSize: 14, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>HCP adjustment</span>
@@ -1754,23 +1790,36 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                       const ss = cfg._savedState;
                       if (!ss) return null;
                       const _NP=ss.liveHcps.length;const vCum=Array(_NP).fill(0),cCum=Array(_NP).fill(0),pCum=Array(_NP).fill(0);
+                      const _vp=cfg.vegasPlayers||[0,1,2,3];
                       cfg.holes.forEach((h,hi) => {
                         if (!ss.inPlay[hi]) return;
                         const g=ss.gross[hi];
                         const n=Array.from({length:_NP},(_,p)=>nettScore(g[p],ss.liveHcps[p],h.si,h.par));
                         if(cfg.games.vegas){const vr=computeVegas(ss.vTeams[hi],g,n,h.par);if(vr){ss.vTeams[hi][0].forEach(p=>{vCum[p]+=vr.netA;});ss.vTeams[hi][1].forEach(p=>{vCum[p]+=vr.netB;});}}
-                        if(cfg.games.ct){const ct=computeCutThroat(n);Array.from({length:_NP},(_,p)=>p).forEach(p=>cCum[p]+=ct[p]);}
-                        if(cfg.games.p3&&h.par===3){const p3=computePar3(n,ss.banker[hi],ss.p3mult[hi]);Array.from({length:_NP},(_,p)=>p).forEach(p=>pCum[p]+=p3[p]);}
+                        if(cfg.games.ct){const vpN=_vp.map(p=>n[p]);const ct=computeCutThroat(vpN);_vp.forEach((p,idx)=>cCum[p]+=ct[idx]);}
+                        if(cfg.games.p3&&h.par===3){const vpN=_vp.map(p=>n[p]);const vpBi=_vp.indexOf(ss.banker[hi])>=0?_vp.indexOf(ss.banker[hi]):0;const vpM=_vp.map(p=>ss.p3mult[hi]?.[p]||1);const p3=computePar3(vpN,vpBi,vpM);_vp.forEach((p,idx)=>pCum[p]+=p3[idx]);}
                       });
                       const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments?.[pi]||0);
                       // Nassau
                       let nassauD = 0;
                       if (cfg.nassau?.on && ss.matchups) {
                         ss.matchups.forEach(m => {
-                          const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
-                          const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
-                          if (m.p1 === pi) nassauD += dol.net;
-                          if (m.p2 === pi) nassauD -= dol.net;
+                          let net = 0;
+                          const type = m.type || "nassau";
+                          if (type === "gdb") {
+                            const r = computeGDB(m, ss.gross, cfg.holes, ss.inPlay);
+                            const dol = gdbDollars(m, r.front, r.back);
+                            net = dol.net;
+                          } else if (type === "stroke") {
+                            const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
+                            net = r.overall.status !== 0 ? (r.overall.status > 0 ? 1 : -1) * m.stake * Math.abs(r.overall.status) : 0;
+                          } else {
+                            const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
+                            const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
+                            net = dol.net;
+                          }
+                          if (m.p1 === pi) nassauD += net;
+                          if (m.p2 === pi) nassauD -= net;
                         });
                       }
                       const d = subtotal + nassauD;
@@ -1830,7 +1879,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               hcps: hcps.slice(0, playerCount),
               playerCount,
               vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
-              holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett,
+              holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap,
               games: {
                 vegas: canVegas && games.vegas,
                 ct: canCT && games.ct,
@@ -1890,7 +1939,7 @@ function QRCodeDisplay({ payload, size = 300 }) {
 
 // SCORECARD
 function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
-  const { names, hcps, holes, games, bankerNett = true } = config;
+  const { names, hcps, holes, games, bankerNett = true, hcpCap = null } = config;
   const [vegasVal, setVegasVal] = useState(config.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(config.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(config.p3Val ?? 5);
@@ -1919,9 +1968,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     const defaultVT = Array.from({length:18}, () => [[vp[0],vp[1]],[vp[2],vp[3]]]);
     const savedVT = savedScores?.vTeams || saved?.vTeams;
     if (!savedVT) return defaultVT;
-    // Check if saved teams are consistent with current vegasPlayers
-    const h0t0 = savedVT[0]?.[0] || [];
-    const consistent = h0t0.every(pi => vp.includes(pi));
+    // Check all holes: both teams must only contain players in current vp
+    const consistent = savedVT.every(ht =>
+      [...(ht[0]||[]), ...(ht[1]||[])].every(pi => vp.includes(pi))
+    );
     return consistent ? savedVT : defaultVT;
   });
   const [banker, setBanker] = useState(() => savedScores?.banker || saved?.banker || Array(18).fill(0));
@@ -1958,6 +2008,16 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     (config.nassau?.matchups || DEFAULT_MATCHUP).map(m => ({ ...m }))
   );
   const [showBackStrokeModal, setShowBackStrokeModal] = useState(false);
+  // Refs for stale-closure-safe access inside setScore setTimeout
+  const vTeamsRef = React.useRef(vTeams);
+  const bankerRef = React.useRef(banker);
+  const p3multRef = React.useRef(p3mult);
+  const matchupsRef = React.useRef(matchups);
+  const liveHcpsRef = React.useRef(liveHcps);
+  const adjustmentsRef = React.useRef(adjustments);
+  const grossRef = React.useRef(gross);
+  const holeIdxRef = React.useRef(holeIdx);
+  const inPlayRef = React.useRef(inPlay);
   const [reportHTML, setReportHTML] = useState(null);
   // Swipe support
   const touchStartX = useRef(null);
@@ -1986,51 +2046,89 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     setGross(prev => {
       const n = prev.map(r => [...r]);
       n[hi][pi] = val;
-        setInPlay(prevInPlay => {
-        const updatedInPlay = [...prevInPlay];
-        updatedInPlay[hi] = true;
-        setTimeout(() => {
-          onSave({
-            roundId,
-            config: { ...config, _roundId: roundId, _savedState: { gross: n, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments, matchups } },
-            date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
-            courseName: config.courseName || "Round",
-          });
-        }, 0);
-        return updatedInPlay;
-      });
+      return n;
+    });
+    setInPlay(prev => {
+      const n = [...prev];
+      n[hi] = true;
       return n;
     });
   }
+
+  // Auto-save whenever gross or inPlay changes
+  const isFirstRender = React.useRef(true);
+  React.useEffect(() => {
+    if (isFirstRender.current) { isFirstRender.current = false; return; }
+    onSave({
+      roundId,
+      config: { ...config, _roundId: roundId, _savedState: {
+        gross,
+        vTeams: vTeamsRef.current,
+        banker: bankerRef.current,
+        p3mult: p3multRef.current,
+        holeIdx: holeIdxRef.current,
+        inPlay,
+        liveHcps: liveHcpsRef.current,
+        adjustments: adjustmentsRef.current,
+        matchups: matchupsRef.current,
+      }},
+      date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
+      courseName: config.courseName || "Round",
+    });
+  }, [gross, inPlay]); // eslint-disable-line react-hooks/exhaustive-deps
   function setVTeam(hi, side, players) {
     setVTeams(prev => { const n=prev.map(r=>[r[0].slice(),r[1].slice()]); n[hi][side]=players; return n; });
   }
   function toggleMult(hi, pi) {
     setP3mult(prev => { const n=JSON.parse(JSON.stringify(prev)); n[hi][pi]=n[hi][pi]===1?2:n[hi][pi]===2?3:1; return n; });
   }
+  // Keep refs in sync with state
+  React.useEffect(() => { vTeamsRef.current = vTeams; }, [vTeams]);
+  React.useEffect(() => { bankerRef.current = banker; }, [banker]);
+  React.useEffect(() => { p3multRef.current = p3mult; }, [p3mult]);
+  React.useEffect(() => { matchupsRef.current = matchups; }, [matchups]);
+  React.useEffect(() => { liveHcpsRef.current = liveHcps; }, [liveHcps]);
+  React.useEffect(() => { adjustmentsRef.current = adjustments; }, [adjustments]);
+  React.useEffect(() => { grossRef.current = gross; }, [gross]);
+  React.useEffect(() => { holeIdxRef.current = holeIdx; }, [holeIdx]);
+  React.useEffect(() => { inPlayRef.current = inPlay; }, [inPlay]);
   const results = holes.map((h, hi) => {
     const g = gross[hi];
-    const n = players.map(pi => nettScore(g[pi], liveHcps[pi], h.si, h.par));
-    const vr = (games.vegas && N >= 4) ? computeVegas(vTeams[hi], g, n, h.par) : null;
+    // Full-group relative HCPs (for scorecard display, 6-point, matchup)
+    const minHcpAll = Math.min(...liveHcps);
+    const n = players.map(pi => nettScore(g[pi], liveHcps[pi] - minHcpAll, h.si, h.par));
+    // VP-only relative HCPs (for Vegas/CT/Banker — min within betting group only)
+    const minHcpVP = Math.min(...vp.map(pi => liveHcps[pi]));
+    const nVP = players.map(pi => {
+      if (!vp.includes(pi)) return n[pi];
+      let relHcp = liveHcps[pi] - minHcpVP;
+      if (hcpCap !== null) relHcp = Math.min(relHcp, hcpCap);
+      return nettScore(g[pi], relHcp, h.si, h.par);
+    });
+    const vr = (games.vegas && N >= 4) ? computeVegas(vTeams[hi], g, nVP, h.par) : null;
     const vd = Array(N).fill(0);
-    if (vr) { vTeams[hi][0].forEach(pi => { vd[pi]=vr.netA; }); vTeams[hi][1].forEach(pi => { vd[pi]=vr.netB; }); }
+    if (vr) {
+      // Only assign points to players actually in vp
+      vTeams[hi][0].filter(pi => vp.includes(pi)).forEach(pi => { vd[pi]=vr.netA; });
+      vTeams[hi][1].filter(pi => vp.includes(pi)).forEach(pi => { vd[pi]=vr.netB; });
+    }
     // CT and Banker restricted to vp (the betting group of 4) when N > 4
     const ct = Array(N).fill(0);
     if (games.ct) {
-      const vpNett = vp.map(pi => n[pi]);
+      const vpNett = vp.map(pi => nVP[pi]);
       const vpCt = computeCutThroat(vpNett);
       vp.forEach((pi, idx) => { ct[pi] = vpCt[idx]; });
     }
     const p3 = Array(N).fill(0);
     if (games.p3 && h.par === 3) {
-      const vpNett = bankerNett ? vp.map(pi => n[pi]) : vp.map(pi => { const gv=parseInt(g[pi],10); return isNaN(gv)||gv<=0?null:gv; });
+      const vpNett = bankerNett ? vp.map(pi => nVP[pi]) : vp.map(pi => { const gv=parseInt(g[pi],10); return isNaN(gv)||gv<=0?null:gv; });
       const vpBankerIdx = vp.indexOf(banker[hi]) >= 0 ? vp.indexOf(banker[hi]) : 0;
       const vpMults = vp.map(pi => p3mult[hi][pi]);
       const vpP3 = computePar3(vpNett, vpBankerIdx, vpMults);
       vp.forEach((pi, idx) => { p3[pi] = vpP3[idx]; });
     }
     const six = (games.six && N === 3) ? compute6Point(n) : Array(N).fill(0);
-    return { g, n, vr, vd, ct, p3, six };
+    return { g, n, nVP, vr, vd, ct, p3, six };
   });
   const vegasCum=Array(N).fill(0), ctCum=Array(N).fill(0), p3Cum=Array(N).fill(0), sixCum=Array(N).fill(0);
   results.forEach((r, hi) => {
@@ -2282,7 +2380,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             })}
           </div>
         )}
-        {/* Running totals row */}
+
         {view === "hole" && completedCount > 0 && (
           <div style={{ display: "flex", gap: 4, padding: "0 14px 8px", justifyContent: "flex-end" }}>
             {players.map(pi => {
@@ -2314,15 +2412,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               <div onClick={() => {
                 setInPlay(prev => {
                   const n = [...prev]; n[holeIdx] = !n[holeIdx];
-                  const updatedInPlay = n;
-                  setTimeout(() => {
-                    onSave({
-                      roundId,
-                      config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay: updatedInPlay, liveHcps, adjustments, matchups } },
-                      date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
-                      courseName: config.courseName || "Round",
-                    });
-                  }, 0);
                   return n;
                 });
               }} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
@@ -2375,7 +2464,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               {/* Nett scores */}
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${N},1fr)`, gap: N>=5?4:6 }}>
                 {players.map(pi => {
-                  const n = res.n[pi];
+                  const n = vp.includes(pi) ? res.nVP[pi] : res.n[pi];
                   const nettDiff = n !== null ? n - h.par : null;
                   return (
                     <div key={pi} style={{ textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "4px 2px 6px", border: "1px solid var(--border)" }}>
@@ -3614,19 +3703,25 @@ export default function App() {
   }
   function saveRound(roundData) {
     const entry = { ...roundData, savedAt: Date.now() };
-    // Upsert: replace existing record with same roundId, otherwise prepend
-    const existing = savedRounds.findIndex(r => r.roundId === entry.roundId);
-    let updated;
-    if (existing >= 0) {
-      updated = savedRounds.map((r, i) => i === existing ? entry : r);
-    } else {
-      updated = [entry, ...savedRounds].slice(0, 3);
-    }
-    setSavedRounds(updated);
-    try { localStorage.setItem("sws_rounds", JSON.stringify(updated)); } catch (_) {}
+    setSavedRounds(prev => {
+      const existing = prev.findIndex(r => r.roundId === entry.roundId);
+      const updated = existing >= 0
+        ? prev.map((r, i) => i === existing ? entry : r)
+        : [entry, ...prev].slice(0, 3);
+      try {
+        localStorage.setItem("sws_rounds", JSON.stringify(updated));
+      } catch (e) {
+        console.error("Save failed:", e.message);
+      }
+      return updated;
+    });
   }
   function loadRound(round) {
-    setConfig(round.config);
+    const ss = round.config?._savedState;
+    const rid = round.config?._roundId;
+    // Strip _savedScores — it takes priority over _savedState and must not bleed into resume
+    const { _savedScores, ...cleanConfig } = round.config;
+    setConfig(cleanConfig);
     window.scrollTo(0, 0);
     // Remember course from resumed round
     if (round.config.courseName) {
@@ -3635,6 +3730,6 @@ export default function App() {
   }
   if (showSplash) return <SplashContent onDone={() => setShowSplash(false)} isLight={isLight} />;
   return config
-    ? <Scorecard config={config} onBack={(scores) => { setSavedScores(scores || null); setSavedConfig(config); setConfig(null); }} onSave={saveRound} isLight={isLight} toggleTheme={toggleTheme} />
+    ? <Scorecard config={config} onBack={(scores) => { setSavedScores(scores || null); setSavedConfig(config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} />
     : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} />;
 }
