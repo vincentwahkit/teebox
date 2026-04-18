@@ -108,7 +108,7 @@ const IOI_PALM_VILLA_HOLES = [
   {par:5,si:11},{par:4,si:7},{par:3,si:17},{par:4,si:5},
   {par:4,si:1},{par:4,si:3},{par:3,si:15},{par:4,si:9},
   {par:5,si:13},{par:4,si:4},{par:5,si:2},{par:3,si:12},
-  {par:4,si:8},{par:4,si:18},{par:4,si:14},{par:4,si:6},
+  {par:4,si:8},{par:4,si:18},{par:3,si:14},{par:4,si:6},
   {par:3,si:16},{par:6,si:10},
 ];
 
@@ -163,8 +163,8 @@ function nettScore(gross, hcp, si, par) {
 }
 function vegasNum(n1, n2) {
   if (n1 === null || n2 === null) return null;
-  const lo = Math.min(n1, n2);
-  const hi = Math.max(n1, n2);
+  const lo = Math.min(Math.min(n1, 9), Math.min(n2, 9));
+  const hi = Math.max(Math.min(n1, 9), Math.min(n2, 9));
   return lo * 10 + hi;
 }
 function flipNum(n) {
@@ -192,47 +192,77 @@ function teamTrigger(g1, g2, par) {
   if (pars >= 2) return { flip: false, mult: 1, bonus: 10 };
   return { flip: false, mult: 1, bonus: 0 };
 }
-function computeVegas(teams, gross, nett, par) {
+// Vegas rule sets:
+// "classic" — nett first, winner flips loser nett number
+// "council" — flip gross first, cancel if both, then nett, winner mult+bonus (DEFAULT)
+// "double"  — flip gross first, no cancellation, then nett, winner mult+bonus
+// Tie-break (all rules): lower gross Vegas number wins the bonus; if gross also tied, no points
+function computeVegas(teams, gross, nett, par, rules) {
+  if (rules === undefined) rules = "council";
   const [t0, t1] = teams;
-  const vA = vegasNum(nett[t0[0]], nett[t0[1]]);
-  const vB = vegasNum(nett[t1[0]], nett[t1[1]]);
-  if (vA === null || vB === null) return null;
-  if (vA === vB) {
-    // Nett tie — check if a bonus trigger exists using either team's gross scores
-    // Award bonus to team with better (lower) gross Vegas number; if also tied, no bonus
-    const gvA = vegasNum(parseInt(gross[t0[0]],10), parseInt(gross[t0[1]],10));
-    const gvB = vegasNum(parseInt(gross[t1[0]],10), parseInt(gross[t1[1]],10));
-    const trigA = teamTrigger(gross[t0[0]], gross[t0[1]], par);
-    const trigB = teamTrigger(gross[t1[0]], gross[t1[1]], par);
+  const trigA = teamTrigger(gross[t0[0]], gross[t0[1]], par);
+  const trigB = teamTrigger(gross[t1[0]], gross[t1[1]], par);
+  const gvA = vegasNum(parseInt(gross[t0[0]],10), parseInt(gross[t0[1]],10));
+  const gvB = vegasNum(parseInt(gross[t1[0]],10), parseInt(gross[t1[1]],10));
+
+  // Shared tie-break: lower gross Vegas wins bonus; gross tie = no points
+  const tieBreak = (vA, vB, effA, effB, flipA, flipB, mult) => {
     const bonus = (trigA.bonus > 0 || trigB.bonus > 0) && gvA !== gvB
-      ? (gvA < gvB ? trigA.bonus || trigB.bonus : trigA.bonus || trigB.bonus)
-      : 0;
+      ? (gvA < gvB ? trigA.bonus || trigB.bonus : trigA.bonus || trigB.bonus) : 0;
     const grossWinnerIsA = gvA < gvB;
     const netA = bonus > 0 ? (grossWinnerIsA ? bonus : -bonus) : 0;
-    const netB = bonus > 0 ? (grossWinnerIsA ? -bonus : bonus) : 0;
-    return { vA, vB, effA: vA, effB: vB, flipA: false, flipB: false, mult: 1,
+    const netB = -netA;
+    return { vA, vB, effA, effB, flipA, flipB, mult,
       tied: true, grossWinnerIsA: bonus > 0 ? grossWinnerIsA : null,
       bonusA: bonus > 0 && grossWinnerIsA ? bonus : 0,
-      bonusB: bonus > 0 && !grossWinnerIsA ? bonus : 0,
-      netA, netB };
+      bonusB: bonus > 0 && !grossWinnerIsA ? bonus : 0, netA, netB };
+  };
+
+  if (rules === "classic") {
+    const vA = vegasNum(nett[t0[0]], nett[t0[1]]);
+    const vB = vegasNum(nett[t1[0]], nett[t1[1]]);
+    if (vA === null || vB === null) return null;
+    if (vA === vB) return tieBreak(vA, vB, vA, vB, false, false, 1);
+    const winnerIsA = vA < vB;
+    const trig = winnerIsA ? trigA : trigB;
+    const effA = (!winnerIsA && trig.flip) ? flipNum(vA) : vA;
+    const effB = ( winnerIsA && trig.flip) ? flipNum(vB) : vB;
+    const diff = Math.abs(effA - effB) * trig.mult;
+    const netA = (winnerIsA ? diff : -diff) + (winnerIsA ? trig.bonus : -trig.bonus);
+    const netB = -netA;
+    return { vA, vB, effA, effB,
+      flipA: !winnerIsA && trig.flip, flipB: winnerIsA && trig.flip, mult: trig.mult,
+      bonusA: winnerIsA ? trig.bonus : 0, bonusB: winnerIsA ? 0 : trig.bonus, netA, netB };
   }
+
+  // council / double: flip gross first
+  const bothFlip = trigA.flip && trigB.flip;
+  const flipA = rules === "double" ? trigA.flip : (trigA.flip && !bothFlip);
+  const flipB = rules === "double" ? trigB.flip : (trigB.flip && !bothFlip);
+
+  const nA_raw = vegasNum(nett[t0[0]], nett[t0[1]]);
+  const nB_raw = vegasNum(nett[t1[0]], nett[t1[1]]);
+  if (nA_raw === null || nB_raw === null) return null;
+
+  const vA = flipB ? flipNum(nA_raw) : nA_raw;
+  const vB = flipA ? flipNum(nB_raw) : nB_raw;
+
+  if (vA === vB) return { ...tieBreak(nA_raw, nB_raw, vA, vB, flipB, flipA, 1), trigA, trigB };
+
   const winnerIsA = vA < vB;
-  const wg = winnerIsA ? [gross[t0[0]], gross[t0[1]]] : [gross[t1[0]], gross[t1[1]]];
-  const trig = teamTrigger(wg[0], wg[1], par);
-  const effA = (!winnerIsA && trig.flip) ? flipNum(vA) : vA;
-  const effB = ( winnerIsA && trig.flip) ? flipNum(vB) : vB;
-  const diff = Math.abs(effA - effB) * trig.mult;
-  const baseA = winnerIsA ? diff : -diff;
-  const baseB = winnerIsA ? -diff : diff;
-  const netA = baseA + (winnerIsA ? trig.bonus : -trig.bonus);
-  const netB = baseB + (winnerIsA ? -trig.bonus : trig.bonus);
-  return { vA, vB, effA, effB,
-    flipA: !winnerIsA && trig.flip,
-    flipB: winnerIsA && trig.flip,
-    mult: trig.mult,
-    bonusA: winnerIsA ? trig.bonus : 0,
-    bonusB: winnerIsA ? 0 : trig.bonus,
-    netA, netB };
+  const winTrig = winnerIsA ? trigA : trigB;
+  const mult = winTrig.flip ? winTrig.mult : 1;
+  // Double Flip: winner's number reverts to original for diff calculation — only loser is flipped
+  const effForDiff_A = (rules === "double" && winnerIsA) ? nA_raw : vA;
+  const effForDiff_B = (rules === "double" && !winnerIsA) ? nB_raw : vB;
+  const diff = Math.abs(effForDiff_A - effForDiff_B) * mult;
+  const bonus = winTrig.bonus;
+  const netA = (winnerIsA ? diff : -diff) + (winnerIsA ? bonus : -bonus);
+  const netB = -netA;
+  return { vA: nA_raw, vB: nB_raw, effA: vA, effB: vB,
+    effForDiffA: effForDiff_A, effForDiffB: effForDiff_B,
+    flipA: flipB, flipB: flipA, mult, trigA, trigB,
+    bonusA: winnerIsA ? bonus : 0, bonusB: winnerIsA ? 0 : bonus, netA, netB };
 }
 function computeCutThroat(nett) {
   const N = nett.length;
@@ -486,7 +516,10 @@ function computeGDB(matchup, gross, holes, inPlay) {
   const front = computeGDB9(matchup, gross, holes, inPlay, 0);
   const back   = computeGDB9(matchup, gross, holes, inPlay, 9);
   const strokeMaps = buildNassauStrokeMaps(matchup, holes);
-  return { front, back, strokeMaps };
+  const holeWL = Array(18).fill(0);
+  if (front?.holeWL) front.holeWL.forEach((v,i) => { holeWL[i] = v; });
+  if (back?.holeWL)  back.holeWL.forEach((v,i)  => { holeWL[9+i] = v; });
+  return { front, back, strokeMaps, holeWL };
 }
 
 function gdbDollars(matchup, front, back) {
@@ -654,6 +687,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     const rowStyle = active ? "" : "opacity:0.4;background:#f5f5f5;";
     const team0 = (vTeams && vTeams[hi]) ? vTeams[hi][0] : [vp[0],vp[1]];
     const team1 = (vTeams && vTeams[hi]) ? vTeams[hi][1] : [vp[2],vp[3]];
+    const isHIO_rep = config.hioRule !== false && h.par === 3 && results[hi].g.some(g => parseInt(g,10) === 1);
     let row = `<tr style="${rowStyle}">
       <td style="text-align:center;font-weight:600;color:#555">${hi+1}</td>
       <td style="text-align:center;color:#777">${h.par}</td>
@@ -671,7 +705,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       const scoreHtml = isNaN(g) ? "-" : scoreBadgeHtml(g, h.par, active);
       // Banker tags — only for VP players on par 3s
       let bankerTag = "";
-      if (games.p3 && h.par === 3 && banker && p3mult && inVP) {
+      if (games.p3 && h.par === 3 && banker && p3mult && inVP && !isHIO_rep) {
         const isBanker = banker[hi] === pi;
         const mult = p3mult[hi] ? p3mult[hi][pi] : 1;
         if (isBanker) bankerTag = `<span style="font-size:8px;color:#c2410c;font-weight:700">B${mult>1?`×${mult}`:""}</span>`;
@@ -679,7 +713,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       }
       // Vegas team dot — only for VP players: filled = team 0, outline = team 1
       let vegasDot = "";
-      if (games.vegas && RN >= 4 && inVP) {
+      if (games.vegas && RN >= 4 && inVP && !isHIO_rep) {
         if (inTeam0) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#333;vertical-align:middle"></span>`;
         else if (inTeam1) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1.5px solid #333;vertical-align:middle"></span>`;
       }
@@ -733,7 +767,6 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   .header-right { text-align: right; font-size: 9px; color: #4a7a4a; }
   .meta-row { display: flex; gap: 20px; margin-bottom: 8px; font-size: 11px; color: #444; }
   h2 { font-size: 9px; color: #4a7a4a; letter-spacing: 2px; text-transform: uppercase; margin: 8px 0 4px; border-bottom: 1px solid #ddd; padding-bottom: 2px; }
-  .two-col { display: grid; grid-template-columns: auto 1fr; gap: 12px; margin-bottom: 6px; }
   table { width: 100%; border-collapse: collapse; }
   th { background: #0a1a0a; color: #4ade80; padding: 4px 3px; text-align: center; font-size: 10px; }
   td { padding: 3px 3px; border-bottom: 1px solid #eee; text-align: center; font-size: 11px; }
@@ -794,32 +827,15 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       <div style="margin-top:2px;color:#4a7a4a">vw-1.0.0</div>
     </div>
   </div>
-  <div class="two-col">
-    <div>
-      <h2>Players</h2>
-      <table style="font-size:10px">
-        <tr><th style="text-align:left;padding:3px 6px">Player</th><th style="padding:3px 6px">HCP / Next</th></tr>
-        ${names.map((n,i) => `<tr>
-          <td style="text-align:left;font-weight:600;padding:2px 6px">${n.slice(0,5)}</td>
-          <td style="padding:2px 6px">${relHcps[i]}<span style="color:#aaa"> / </span><span style="font-weight:700">${nextRelHcps[i]}</span></td>
-        </tr>`).join("")}
-      </table>
-    </div>
-    ${!isSolo ? `<div>
-      <h2>$$$ Summary</h2>
-      <table>
-        <tr><th style="text-align:left"></th>${names.map(n=>`<th>${n.slice(0,5)}</th>`).join("")}</tr>
-        ${games.vegas ? `<tr><td class="label">Vegas</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
-        ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
-        ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
-        ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
-        <tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.vegas||games.ct||games.p3)&&(games.six||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>
-        ${games.six && sixCum ? `<tr><td class="label">6-Pt${sixVal===0?" (pts)":""}</td>${RP.map(i=>{const v=sixVal>0?RP.reduce((s,j)=>j!==i?s+(sixCum[i]-sixCum[j])*sixVal:s,0):sixCum[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${sixVal===0?v+"pts":v>0?"+"+v:v||"—"}</td>`;}).join("")}</tr>`:""} 
-        ${matchupEnabled ? `<tr><td class="label">Matchup</td>${(()=>{const nd=Array(RP.length).fill(0);(nassauResults||[]).forEach((r,mi)=>{const m=matchups[mi];nd[m.p1]+=r.dollars.net;nd[m.p2]-=r.dollars.net;});return nd.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("");})()}</tr>`:""} 
-        ${(matchupEnabled||(games.six&&sixVal>0)) ? `<tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>` : ""}
-      </table>
-    </div>` : ""}
-  </div>
+  ${!isSolo ? `<div>
+    <h2>$$$ Summary</h2>
+    <table>
+      <tr><th style="text-align:left"></th>${names.map(n=>`<th>${n.slice(0,8)}</th>`).join("")}</tr>
+      ${(games.vegas||games.ct||games.p3) ? `<tr style="background:#f5f5f5"><td class="label" style="color:#888;font-size:9px">HCP/Next</td>${names.map((_,i)=>`<td style="font-size:10px;color:#888">${relHcps[i]} / <b>${nextRelHcps[i]}</b></td>`).join("")}</tr>` : ""}
+      ${games.vegas ? `<tr><td class="label">Vegas</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}      <tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.vegas||games.ct||games.p3)&&(games.six||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>
+      ${games.six && sixCum ? `<tr><td class="label">6-Pt${sixVal===0?" (pts)":""}</td>${RP.map(i=>{const v=sixVal>0?RP.reduce((s,j)=>j!==i?s+(sixCum[i]-sixCum[j])*sixVal:s,0):sixCum[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${sixVal===0?v+"pts":v>0?"+"+v:v||"—"}</td>`;}).join("")}</tr>`:""}       ${matchupEnabled ? `<tr><td class="label">Matchup</td>${(()=>{const nd=Array(RP.length).fill(0);(nassauResults||[]).forEach((r,mi)=>{const m=matchups[mi];nd[m.p1]+=r.dollars.net;nd[m.p2]-=r.dollars.net;});return nd.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("");})()}</tr>`:""}       ${(matchupEnabled||(games.six&&sixVal>0)) ? `<tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>` : ""}
+    </table>
+  </div>` : ""}
   <h2>Scorecard (Gross)</h2>
   ${games.vegas && RN >= 4 ? `<div style="font-size:9px;color:#555;margin-bottom:2px">
     <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#333;vertical-align:middle;margin-right:3px"></span>= Team A &nbsp;
@@ -832,7 +848,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   <table class="scorecard">
     <tr>
       <th>H</th><th>Par</th><th>SI</th>
-      ${(function(){ const hasSuffix2 = (games.vegas && RN >= 4) || games.p3; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,5)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
+      ${(function(){ const hasSuffix2 = (games.vegas && RN >= 4) || games.p3; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,8)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
     </tr>
     ${scRows}
   </table>
@@ -989,6 +1005,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [p3Val, setP3Val] = useState(sc?.p3Val ?? 5);
   const [bankerNett, setBankerNett] = useState(sc?.bankerNett ?? true);
   const [hcpCap, setHcpCap] = useState(sc?.hcpCap ?? null);
+  const [vegasRules, setVegasRules] = useState(sc?.vegasRules ?? "council");
+  const [showVegasAdvanced, setShowVegasAdvanced] = useState(false);
+  const [showVegasInfo, setShowVegasInfo] = useState(false);
+  const [hioRule, setHioRule] = useState(sc?.hioRule ?? true);
   const [sixVal, setSixVal] = useState(sc?.sixVal ?? 1);
   const [hcpThreshold, setHcpThreshold] = useState(sc?.hcpThreshold ?? 25);
   const [courses, setCourses] = useState([]);
@@ -1196,7 +1216,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           <div style={{ background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 420 }}>
             <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, marginBottom: 12, fontFamily: "'DM Sans', sans-serif" }}>IMPORT ROUND</div>
             <div style={{ fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>{importPreview.courseName || "Round"}</div>
-            <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 14, fontFamily: "'DM Sans', sans-serif" }}>{importPreview.date}</div>
+            <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 14, fontFamily: "'DM Sans', sans-serif" }}>{importPreview.date}</div>
             <div style={{ display: "grid", gridTemplateColumns: `repeat(${importPreview.config.names.length},1fr)`, gap: 6, marginBottom: 16 }}>
               {importPreview.config.names.map((name, pi) => {
                 const cfg = importPreview.config;
@@ -1242,7 +1262,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 return (
                   <div key={pi} style={{ background: "var(--input)", borderRadius: 8, padding: "8px 4px", textAlign: "center" }}>
                     <div style={{ fontSize: 11, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{name.slice(0,5)}</div>
-                    <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>HCP {relHcp}</div>
+                    <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>HCP {relHcp}</div>
                     <div style={{ fontSize: 18, fontWeight: "700", color: d>0?(isLight?"#16a34a":COLORS[0]):d<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
                   </div>
                 );
@@ -1273,7 +1293,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             <TeeBoxLogo size={44} />
             <div style={{ textAlign: "left" }}>
               <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 28, fontWeight: "900", letterSpacing: 4, color: "var(--accent)", lineHeight: 1 }}>TEE BOX</div>
-              <div style={{ fontSize: 11, color: "var(--dim)", letterSpacing: 1, marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>May the honors be with you.</div>
+              <div style={{ fontSize: 11, color: "var(--text)", letterSpacing: 1, marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>May the honors be with you.</div>
             </div>
           </div>
         </div>
@@ -1284,7 +1304,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               <span style={{ fontSize: 20 }}>♻️</span>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: "700", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>Scores preserved</div>
-                <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>Change settings then START ROUND</div>
+                <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Change settings then START ROUND</div>
               </div>
               <button onClick={() => onNewRound && onNewRound()}
                 style={{ background: "#3a1a1a", color: "var(--neg)", border: "1px solid #5a2a2a", borderRadius: 8, fontSize: 13, padding: "6px 10px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -1303,8 +1323,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                     try { localStorage.setItem("sws_playercount", String(n)); } catch(_) {}
                   }} style={{ width: 40, height: 40, borderRadius: 8, cursor: "pointer", fontSize: 16, fontWeight: "700",
                     border: `1px solid ${playerCount===n?"var(--accent)":"var(--border)"}`,
-                    background: playerCount===n?"var(--accent)":"transparent",
-                    color: playerCount===n?"#000":"var(--muted)",
+                    background: playerCount===n ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                    color: playerCount===n ? "#fff" : "var(--muted)",
                     fontFamily: "'DM Sans', sans-serif" }}>
                     {n}
                   </button>
@@ -1395,19 +1415,19 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                       <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--border)" }}>
                         <div style={{ cursor: "pointer", flex: 1 }} onClick={() => loadCourse(c)}>
                           <div style={{ fontSize: 14, color: loadedCourse?.id===c.id?"var(--accent)":"var(--text)", fontWeight: "600" }}>{c.name} {loadedCourse?.id===c.id && "✓"}</div>
-                          <div style={{ fontSize: 11, color: "var(--muted)" }}>⛳ {c.tee}</div>
+                          <div style={{ fontSize: 12, color: "var(--text)" }}>⛳ {c.tee}</div>
                         </div>
                         <div style={{ fontSize: 11, color: "#3a6a3a", padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 6 }}>built-in</div>
                       </div>
                     ))}
                     {courses.length > 0 && (
                       <>
-                        <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: 2, margin: "10px 0 8px", fontFamily: "'DM Sans', sans-serif" }}>SAVED</div>
+                        <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 2, margin: "10px 0 8px", fontFamily: "'DM Sans', sans-serif" }}>SAVED</div>
                         {courses.map(c => (
                           <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--border)" }}>
                             <div style={{ cursor: "pointer", flex: 1 }} onClick={() => loadCourse(c)}>
                               <div style={{ fontSize: 14, color: loadedCourse?.id===c.id?"var(--accent)":"var(--text)", fontWeight: "600" }}>{c.name} {loadedCourse?.id===c.id && "✓"}</div>
-                              <div style={{ fontSize: 11, color: "var(--muted)" }}>⛳ {c.tee}{c.note ? ` · ${c.note}` : ""}</div>
+                              <div style={{ fontSize: 12, color: "var(--text)" }}>⛳ {c.tee}{c.note ? ` · ${c.note}` : ""}</div>
                             </div>
                             <div style={{ display: "flex", gap: 6 }}>
                               <button onClick={() => { loadCourse(c); openSaveForm(c); }} style={{ background: "transparent", border: "1px solid var(--border2)", borderRadius: 6, color: "var(--accent)", cursor: "pointer", fontSize: 12, padding: "5px 10px" }}>✎</button>
@@ -1437,14 +1457,14 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 <div style={{ borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
                   {/* Header */}
                   <div style={{ display: "grid", gridTemplateColumns: "36px 1fr 80px", background: "var(--card)", padding: "8px 12px", gap: 8 }}>
-                    <div style={{ fontSize: 11, color: "var(--dim)", fontWeight: "600", textAlign: "center" }}>H</div>
-                    <div style={{ fontSize: 11, color: "var(--dim)", fontWeight: "600", textAlign: "center" }}>PAR</div>
-                    <div style={{ fontSize: 11, color: "var(--dim)", fontWeight: "600", textAlign: "center" }}>SI</div>
+                    <div style={{ fontSize: 11, color: "var(--text)", fontWeight: "600", textAlign: "center" }}>H</div>
+                    <div style={{ fontSize: 11, color: "var(--text)", fontWeight: "600", textAlign: "center" }}>PAR</div>
+                    <div style={{ fontSize: 11, color: "var(--text)", fontWeight: "600", textAlign: "center" }}>SI</div>
                   </div>
                   {holes.map((hole, hi) => (
                     <div key={hi} style={{ display: "grid", gridTemplateColumns: "36px 1fr 80px", padding: "7px 12px", gap: 8, alignItems: "center", background: hi%2===0?"var(--input)":"var(--card)", borderTop: "1px solid var(--border)" }}>
                       {/* Hole number */}
-                      <div style={{ fontSize: 16, fontWeight: "700", color: "var(--muted)", textAlign: "center" }}>{hi+1}</div>
+                      <div style={{ fontSize: 16, fontWeight: "700", color: "var(--text)", textAlign: "center" }}>{hi+1}</div>
                       {/* Par stepper */}
                       <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
                         <button className="pm-btn" onClick={() => { const h=holes.map(x=>({...x})); h[hi].par=Math.max(3,hole.par-1); setHoles(h); }} style={S.pmBtnInline}>−</button>
@@ -1468,7 +1488,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             {/* Vegas Players — only shown when N > 4 */}
             {playerCount > 4 && games.vegas && (
               <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>BETTING GROUP — PICK 4 (VEGAS / CT / BANKER)</div>
+                <div style={{ fontSize: 12, color: "var(--text)", letterSpacing: 1, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>BETTING GROUP — PICK 4 (VEGAS / CT / BANKER)</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {Array.from({length: playerCount}, (_,i) => {
                     const isIn = vegasPlayers.includes(i);
@@ -1497,6 +1517,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 )}
               </div>
             )}
+            {/* ── TEAM GAMES ── */}
+            <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>TEAM GAMES</div>
             {/* Vegas / CT / Banker — each row: toggle + stake */}
             {[["vegas","Vegas",canVegas,vegasVal,setVegasVal],["ct","Cut Throat",canCT,ctVal,setCtVal],["p3","Banker",canP3,p3Val,setP3Val]].map(([key,label,available,val,setter]) => {
               const on = games[key];
@@ -1506,8 +1528,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   <button onClick={() => { if (!available) return; setGames(g => ({ ...g, [key]: !g[key] })); }}
                     style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, cursor: available?"pointer":"not-allowed",
                       border: `1px solid ${on && available?"var(--accent)":"var(--border)"}`,
-                      background: on && available?"var(--accent)":"transparent",
-                      color: on && available?"#000":"var(--muted)",
+                      background: on && available ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                      color: on && available ? "#fff" : "var(--muted)",
                       fontSize: 16, fontWeight: "700" }}>
                     {on && available ? "✓" : "—"}
                   </button>
@@ -1525,47 +1547,191 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 </div>
               );
             })}
-            {/* Banker nett toggle */}
-            {games.p3 && canP3 && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, paddingLeft: 46 }}>
-                <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Use nett scores</span>
-                <div onClick={() => setBankerNett(v => !v)}
-                  style={{ width: 44, height: 24, borderRadius: 12, background: bankerNett?"var(--accent)":"var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
-                  <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: bankerNett?23:3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
-                </div>
-              </div>
-            )}
-            {/* HCP Cap — Vegas/CT/Banker only */}
-            {canVegas && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, paddingLeft: 46 }}>
-                <div>
-                  <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>HCP cap </span>
-                  <span style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>(Vegas/CT/Banker)</span>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <div onClick={() => setHcpCap(v => v === null ? 24 : null)}
-                    style={{ width: 44, height: 24, borderRadius: 12, background: hcpCap!==null?"var(--accent)":"var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
-                    <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: hcpCap!==null?23:3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+            {/* ── Advanced toggle ── */}
+            {(() => {
+              const activeCount = [
+                !bankerNett,
+                hcpCap !== null,
+                hcpThreshold !== 25,
+                vegasRules !== "council",
+                !hioRule,
+              ].filter(Boolean).length;
+              return (
+                <div onClick={() => setShowVegasAdvanced(v => !v)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showVegasAdvanced ? 10 : 14, cursor: "pointer", padding: "10px 14px", background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 16 }}>⚙</span>
+                    <span style={{ fontSize: 15, fontWeight: "700", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Advanced</span>
+                    {activeCount > 0 && (
+                      <span style={{ fontSize: 11, fontWeight: "700", color: "#000", background: "var(--accent)", borderRadius: 10, padding: "1px 7px", fontFamily: "'DM Sans', sans-serif" }}>{activeCount}</span>
+                    )}
                   </div>
-                  {hcpCap !== null && (
-                    <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-                      <button className="pm-btn" onClick={() => setHcpCap(v => Math.max(1, v-1))} style={S.pmBtnInline}>−</button>
-                      <span style={{ width: 36, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{hcpCap}</span>
-                      <button className="pm-btn" onClick={() => setHcpCap(v => v+1)} style={S.pmBtnInline}>+</button>
+                  <span style={{ fontSize: 13, color: "var(--accent)" }}>{showVegasAdvanced ? "▲" : "▼"}</span>
+                </div>
+              );
+            })()}
+            {showVegasAdvanced && (
+              <div style={{ background: "var(--card)", borderRadius: 8, borderLeft: "3px solid var(--accent)", border: "1px solid var(--border2)", padding: "12px 14px", marginBottom: 14 }}>
+                {/* Banker nett toggle */}
+                {games.p3 && canP3 && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div><span style={{ fontSize: 15, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>Use nett scores </span><span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>(Banker only)</span></div>
+                    <div onClick={() => setBankerNett(v => !v)}
+                      style={{ width: 44, height: 24, borderRadius: 12, background: bankerNett?"var(--accent)":"var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
+                      <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: bankerNett?23:3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
                     </div>
-                  )}
+                  </div>
+                )}
+                {/* HIO Rule */}
+                {canP3 && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 15, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>Hole In One rule <span style={{ fontSize: 12, color: "var(--text)" }}>(par 3)</span></div>
+                      <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginTop: 2 }}>Vegas · CT · Banker all off for HIO hole</div>
+                    </div>
+                    <div onClick={() => setHioRule(v => !v)}
+                      style={{ width: 44, height: 24, borderRadius: 12, background: hioRule ? "var(--accent)" : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
+                      <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: hioRule ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+                    </div>
+                  </div>
+                )}
+                {/* HCP Cap */}
+                {canVegas && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <div>
+                      <span style={{ fontSize: 15, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>HCP cap </span>
+                      <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>(Vegas/CT/Banker)</span>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div onClick={() => setHcpCap(v => v === null ? 24 : null)}
+                        style={{ width: 44, height: 24, borderRadius: 12, background: hcpCap!==null?"var(--accent)":"var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", flexShrink: 0 }}>
+                        <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: hcpCap!==null?23:3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+                      </div>
+                      {hcpCap !== null && (
+                        <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                          <button className="pm-btn" onClick={() => setHcpCap(v => Math.max(1, v-1))} style={S.pmBtnInline}>−</button>
+                          <span style={{ width: 36, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{hcpCap}</span>
+                          <button className="pm-btn" onClick={() => setHcpCap(v => v+1)} style={S.pmBtnInline}>+</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {/* HCP adjustment */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: canVegas ? 10 : 0 }}>
+                  <span style={{ fontSize: 15, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>HCP adjustment</span>
+                  <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                    <button className="pm-btn" onClick={() => setHcpThreshold(v => Math.max(1,v-1))} style={S.pmBtnInline}>−</button>
+                    <span style={{ width: 52, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>${hcpThreshold}</span>
+                    <button className="pm-btn" onClick={() => setHcpThreshold(v => v+1)} style={S.pmBtnInline}>+</button>
+                  </div>
+                </div>
+                {/* Vegas Rules */}
+                {canVegas && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <div style={{ fontSize: 14, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>Vegas rules</div>
+                      <button onClick={() => setShowVegasInfo(v => !v)}
+                        style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 14, color: showVegasInfo ? "var(--accent)" : "var(--dim)", padding: "0 2px" }}>ⓘ</button>
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[["council","Standard"],["classic","Classic"],["double","Aggressive"]].map(([val, label]) => (
+                        <button key={val} onClick={() => setVegasRules(val)}
+                          style={{ flex: 1, padding: "8px 0", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: "700",
+                            border: `1px solid ${vegasRules===val?"var(--accent)":"var(--border)"}`,
+                            background: vegasRules===val ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                            color: vegasRules===val ? "#fff" : "var(--text)",
+                            fontFamily: "'DM Sans', sans-serif" }}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    {showVegasInfo && (
+                      <div style={{ marginTop: 8, padding: "12px 14px", background: "var(--card)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                        {vegasRules === "council" && (
+                          <div style={{ fontFamily: "'DM Sans', sans-serif" }}>
+                            <div style={{ fontSize: 16, fontWeight: "700", color: "var(--accent)", marginBottom: 10 }}>Standard Rules</div>
+                            {[
+                              "1. Check each team's gross scores for a flip trigger.",
+                              "2. If both teams trigger → flips cancel out. If only one triggers → flip the opponent's gross Vegas number.",
+                              "3. Compute nett scores → form nett Vegas numbers, now reflecting the gross flip.",
+                              "4. Compare nett numbers → winner determined.",
+                              "5. Winner earns diff × multiplier + bonus.",
+                            ].map((s, i) => (
+                              <div key={i} style={{ fontSize: 15, color: "var(--text)", lineHeight: 1.7, marginBottom: 4 }}>{s}</div>
+                            ))}
+                          </div>
+                        )}
+                        {vegasRules === "classic" && (
+                          <div style={{ fontFamily: "'DM Sans', sans-serif" }}>
+                            <div style={{ fontSize: 16, fontWeight: "700", color: "var(--accent)", marginBottom: 10 }}>Classic Rules</div>
+                            {[
+                              "1. Compute nett scores → form nett Vegas numbers.",
+                              "2. Compare nett numbers → winner determined.",
+                              "3. If winner triggered a flip → flip the loser's nett number, recalculate diff.",
+                              "4. Winner earns diff × multiplier + bonus.",
+                            ].map((s, i) => (
+                              <div key={i} style={{ fontSize: 15, color: "var(--text)", lineHeight: 1.7, marginBottom: 4 }}>{s}</div>
+                            ))}
+                          </div>
+                        )}
+                        {vegasRules === "double" && (
+                          <div style={{ fontFamily: "'DM Sans', sans-serif" }}>
+                            <div style={{ fontSize: 16, fontWeight: "700", color: "var(--accent)", marginBottom: 10 }}>Aggressive Rules</div>
+                            {[
+                              "1. Check each team's gross scores for a flip trigger.",
+                              "2. If both teams trigger → both flips apply, no cancellation.",
+                              "3. Compute nett scores → form nett Vegas numbers, reflecting all flips.",
+                              "4. Compare nett numbers → winner determined.",
+                              "5. Winner's number reverts to original (pre-flip) for diff calculation — only the loser's flipped number is used.",
+                              "6. Winner earns diff × multiplier + bonus.",
+                              "⚠ Most volatile — flips never cancel, and winner always uses original number for a bigger diff.",
+                            ].map((s, i) => (
+                              <div key={i} style={{ fontSize: 15, color: i === 6 ? "#f97316" : "var(--muted)", lineHeight: 1.7, marginBottom: 4, fontWeight: i === 6 ? "600" : "400" }}>{s}</div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Trigger table */}
+                <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: 13, fontWeight: "700", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>Flip Triggers (gross scores)</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'DM Sans', sans-serif" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                        {["Condition","Flip","Mult","Bonus"].map(h => (
+                          <th key={h} style={{ padding: "4px 6px", fontSize: 12, color: "var(--text)", fontWeight: "600", textAlign: "left" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        ["Eagle / 2 Birdies", "✓", "×2", "+20"],
+                        ["Birdie + Par",       "✓", "×1", "+20"],
+                        ["Birdie only",        "✓", "×1", "—"],
+                        ["2 Pars",             "—", "×1", "+10"],
+                        ["Other",              "—", "×1", "—"],
+                      ].map(([cond, flip, mult, bonus]) => (
+                        <tr key={cond} style={{ borderBottom: "1px solid var(--border)" }}>
+                          <td style={{ padding: "6px 6px", fontSize: 13, color: "var(--text)" }}>{cond}</td>
+                          <td style={{ padding: "6px 6px", fontSize: 13, color: flip==="✓"?"#f97316":"var(--dim)", fontWeight: flip==="✓"?"700":"400" }}>{flip}</td>
+                          <td style={{ padding: "6px 6px", fontSize: 13, color: mult!=="×1"?"#e879f9":"var(--dim)" }}>{mult}</td>
+                          <td style={{ padding: "6px 6px", fontSize: 13, color: bonus!=="—"?"var(--accent)":"var(--dim)" }}>{bonus}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginTop: 6 }}>
+                    Mult and bonus awarded to winning team only. Eagle bonus only applies if partner makes par or better.
+                  </div>
                 </div>
               </div>
             )}
-            {/* HCP adjustment — applies to Vegas/CT/Banker */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 8, marginTop: 2, marginBottom: 14, borderTop: "1px solid var(--border)" }}>
-              <span style={{ fontSize: 14, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>HCP adjustment</span>
-              <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-                <button className="pm-btn" onClick={() => setHcpThreshold(v => Math.max(1,v-1))} style={S.pmBtnInline}>−</button>
-                <span style={{ width: 52, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>${hcpThreshold}</span>
-                <button className="pm-btn" onClick={() => setHcpThreshold(v => v+1)} style={S.pmBtnInline}>+</button>
-              </div>
-            </div>
+            {/* ── INDIVIDUAL GAME ── */}
+            <div style={{ borderTop: "2px solid var(--border)", marginBottom: 12 }} />
+            <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>3-BALL GAMES</div>
             {/* 6-Point game — 3 players only */}
             {(() => {
               const available = canSix;
@@ -1575,8 +1741,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   <button onClick={() => { if (!available) return; setGames(g => ({ ...g, six: !g.six })); }}
                     style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, cursor: available?"pointer":"not-allowed",
                       border: `1px solid ${on&&available?"var(--accent)":"var(--border)"}`,
-                      background: on&&available?"var(--accent)":"transparent",
-                      color: on&&available?"#000":"var(--muted)", fontSize: 16, fontWeight: "700" }}>
+                      background: on&&available ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                      color: on&&available ? "#fff" : "var(--muted)", fontSize: 16, fontWeight: "700" }}>
                     {on&&available?"✓":"—"}
                   </button>
                   <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
@@ -1593,15 +1759,18 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 </div>
               );
             })()}
+            {/* ── MATCHUPS ── */}
+            <div style={{ borderTop: "2px solid var(--border)", marginBottom: 12, marginTop: 4 }} />
+            <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>MATCHUPS</div>
             {/* Matchup toggle */}
             {canMatchup && (
-              <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12 }}>
+              <div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: matchupBets.on ? 12 : 0 }}>
                   <button onClick={() => setMatchupBets(n => ({ ...n, on: !n.on }))}
                     style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, cursor: "pointer",
                       border: `1px solid ${matchupBets.on?"var(--accent)":"var(--border)"}`,
-                      background: matchupBets.on?"var(--accent)":"transparent",
-                      color: matchupBets.on?"#000":"var(--muted)",
+                      background: matchupBets.on ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                      color: matchupBets.on ? "#fff" : "var(--muted)",
                       fontSize: 16, fontWeight: "700" }}>
                     {matchupBets.on ? "✓" : "—"}
                   </button>
@@ -1628,8 +1797,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                             <button key={val} onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].type=val; return { ...n, matchups: ms }; })}
                               style={{ flex: 1, padding: "8px 0", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: "700",
                                 border: `1px solid ${(m.type||"nassau")===val?"var(--accent)":"var(--border)"}`,
-                                background: (m.type||"nassau")===val?"var(--accent)":"transparent",
-                                color: (m.type||"nassau")===val?"#000":"var(--muted)",
+                                background: (m.type||"nassau")===val ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                                color: (m.type||"nassau")===val ? "#fff" : "var(--text)",
                                 fontFamily: "'DM Sans', sans-serif" }}>
                               {label}
                             </button>
@@ -1658,7 +1827,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                               {[["FRONT","strokesFront",giverF,receiverF],["BACK","strokesBack",giverB,receiverB]].map(([label, field, giver, receiver]) => (
                                 <div key={field} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                                   <div>
-                                    <div style={{ fontSize: 10, color: "var(--muted)", letterSpacing: 1, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+                                    <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 1, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
                                     <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                                       {m[field] === 0 ? "Scratch"
                                         : <><span style={{ color: isLight?COLORS_LIGHT[giver]:COLORS[giver], fontWeight:"600" }}>{names[giver]||`P${giver+1}`}</span> gives <span style={{ color: isLight?COLORS_LIGHT[receiver]:COLORS[receiver], fontWeight:"600" }}>{names[receiver]||`P${receiver+1}`}</span> {Math.abs(m[field])} stroke{Math.abs(m[field])!==1?"s":""}</>
@@ -1679,7 +1848,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
                           <div>
                             <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Stake</span>
-                            <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
+                            <div style={{ fontSize: 10, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                               {(m.type||"nassau")==="nassau" ? `F=1× B=1× Overall=2×` : (m.type)==="gdb" ? `Game 3× · Dormie 1× · Bye 1×` : `Net holes won × stake/hole`}
                             </div>
                           </div>
@@ -1694,14 +1863,14 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                           <div style={{ marginBottom: 10 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                               <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Units ratio</span>
-                              <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
+                              <span style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                                 {(m.units||[1,1,2]).join(" : ")} · max ${(m.units||[1,1,2]).reduce((s,u)=>s+u,0) * m.stake}
                               </span>
                             </div>
                             <div style={{ display: "flex", gap: 8 }}>
                               {["F","B","18"].map((label, ui) => (
                                 <div key={ui} style={{ flex: 1, textAlign: "center" }}>
-                                  <div style={{ fontSize: 10, color: "var(--muted)", marginBottom: 4, letterSpacing: 1, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+                                  <div style={{ fontSize: 10, color: "var(--text)", marginBottom: 4, letterSpacing: 1, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
                                   <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
                                     <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x,units:[...(x.units||[1,1,2])]})); ms[mi].units[ui]=Math.max(0,ms[mi].units[ui]-1); return { ...n, matchups: ms }; })} style={S.pmBtnInline}>−</button>
                                     <span style={{ width: 28, textAlign: "center", color: (m.units||[1,1,2])[ui]===0?"var(--dim)":"var(--accent)", fontSize: 16, fontWeight: "700" }}>{(m.units||[1,1,2])[ui]}</span>
@@ -1715,7 +1884,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                         {/* GDB info */}
                         {(m.type||"nassau") === "gdb" && (
                           <div style={{ marginBottom: 10, background: "var(--card)", borderRadius: 8, padding: "8px 12px" }}>
-                            <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
+                            <span style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                               Game ${m.stake*3} · Dormie ${m.stake} · Bye ${m.stake} · max ${m.stake*5}/9
                             </span>
                           </div>
@@ -1729,8 +1898,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                               <button key={val} onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].pressMode=val; return { ...n, matchups: ms }; })}
                                 style={{ padding: "6px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
                                   border: `1px solid ${m.pressMode===val?"var(--accent)":"var(--border)"}`,
-                                  background: m.pressMode===val?"var(--accent)":"transparent",
-                                  color: m.pressMode===val?"#000":"var(--muted)",
+                                  background: m.pressMode===val ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                                  color: m.pressMode===val ? "#fff" : "var(--text)",
                                   fontFamily: "'DM Sans', sans-serif" }}>
                                 {label}
                               </button>
@@ -1740,7 +1909,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                         {/* Press multiplier — only when press is on */}
                         {m.pressMode !== "off" && (
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                            <span style={{ fontSize: 13, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>Press stake</span>
+                            <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>Press stake</span>
                             <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
                               <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].pressMult=Math.max(1,(ms[mi].pressMult||1)-1); return { ...n, matchups: ms }; })} style={S.pmBtnInline}>−</button>
                               <span style={{ width: 38, textAlign: "center", color: "var(--accent)", fontSize: 16, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{m.pressMult||1}</span>
@@ -1771,7 +1940,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                     <div>
                       <div style={{ fontSize: 16, fontWeight: "700", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{round.courseName || "Round"}</div>
-                      <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>{round.date}</div>
+                      <div style={{ fontSize: 13, color: "var(--text)", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>{round.date}</div>
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => exportRound(round)}
@@ -1829,7 +1998,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                       return (
                         <div key={pi} style={{ textAlign: "center", background: "var(--card)", borderRadius: 6, padding: "6px 4px" }}>
                           <div style={{ fontSize: 13, fontWeight: "700", color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>{name.slice(0,5)}</div>
-                          <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>HCP {relHcp}</div>
+                          <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>HCP {relHcp}</div>
                           <div style={{ fontSize: 17, fontWeight: "700", color: d>0?(isLight?"#16a34a":COLORS[0]):d<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{d>0?"+":""}{d}</div>
                         </div>
                       );
@@ -1879,7 +2048,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               hcps: hcps.slice(0, playerCount),
               playerCount,
               vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
-              holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap,
+              holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
               games: {
                 vegas: canVegas && games.vegas,
                 ct: canCT && games.ct,
@@ -1888,7 +2057,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               },
               nassau: matchupBets,
               sixVal,
-              courseName: loadedCourse ? `${loadedCourse.name} — ${loadedCourse.tee}` : "Custom Course",
+              courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
               _savedScores: savedScores || null,
             });
             window.scrollTo(0, 0);
@@ -1939,7 +2108,7 @@ function QRCodeDisplay({ payload, size = 300 }) {
 
 // SCORECARD
 function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
-  const { names, hcps, holes, games, bankerNett = true, hcpCap = null } = config;
+  const { names, hcps, holes, games, bankerNett = true, hcpCap = null, vegasRules = "council", hioRule = true } = config;
   const [vegasVal, setVegasVal] = useState(config.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(config.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(config.p3Val ?? 5);
@@ -2105,7 +2274,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
       if (hcpCap !== null) relHcp = Math.min(relHcp, hcpCap);
       return nettScore(g[pi], relHcp, h.si, h.par);
     });
-    const vr = (games.vegas && N >= 4) ? computeVegas(vTeams[hi], g, nVP, h.par) : null;
+    // HIO detection — any player scores 1 on a par 3
+    const isHIO = hioRule && h.par === 3 && players.some(pi => parseInt(g[pi], 10) === 1);
+    const vr = (games.vegas && N >= 4 && !isHIO) ? computeVegas(vTeams[hi], g, nVP, h.par, vegasRules) : null;
     const vd = Array(N).fill(0);
     if (vr) {
       // Only assign points to players actually in vp
@@ -2114,13 +2285,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     }
     // CT and Banker restricted to vp (the betting group of 4) when N > 4
     const ct = Array(N).fill(0);
-    if (games.ct) {
+    if (games.ct && !isHIO) {
       const vpNett = vp.map(pi => nVP[pi]);
       const vpCt = computeCutThroat(vpNett);
       vp.forEach((pi, idx) => { ct[pi] = vpCt[idx]; });
     }
     const p3 = Array(N).fill(0);
-    if (games.p3 && h.par === 3) {
+    if (games.p3 && h.par === 3 && !isHIO) {
       const vpNett = bankerNett ? vp.map(pi => nVP[pi]) : vp.map(pi => { const gv=parseInt(g[pi],10); return isNaN(gv)||gv<=0?null:gv; });
       const vpBankerIdx = vp.indexOf(banker[hi]) >= 0 ? vp.indexOf(banker[hi]) : 0;
       const vpMults = vp.map(pi => p3mult[hi][pi]);
@@ -2128,7 +2299,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
       vp.forEach((pi, idx) => { p3[pi] = vpP3[idx]; });
     }
     const six = (games.six && N === 3) ? compute6Point(n) : Array(N).fill(0);
-    return { g, n, nVP, vr, vd, ct, p3, six };
+    return { g, n, nVP, vr, vd, ct, p3, six, isHIO };
   });
   const vegasCum=Array(N).fill(0), ctCum=Array(N).fill(0), p3Cum=Array(N).fill(0), sixCum=Array(N).fill(0);
   results.forEach((r, hi) => {
@@ -2233,7 +2404,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, marginBottom: 4, fontFamily: "'DM Sans', sans-serif", flexShrink: 0 }}>
                     TURN — {secondNineLabel.toUpperCase()} STROKES
                   </div>
-                  <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 16, fontFamily: "'DM Sans', sans-serif", flexShrink: 0 }}>
+                  <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 16, fontFamily: "'DM Sans', sans-serif", flexShrink: 0 }}>
                     Adjust strokes for {secondNineLabel}. Tap ± to change.
                   </div>
                   <div style={{ overflowY: "auto", flex: 1, marginBottom: 12 }}>
@@ -2268,12 +2439,12 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                     return (
                       <div key={mi} style={{ marginBottom: 0, paddingBottom: 18, borderBottom: mi < matchups.length - 1 ? "1px solid var(--border2)" : "none", marginTop: mi > 0 ? 18 : 0 }}>
                         <div style={{ fontSize: 18, fontWeight: "800", color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
-                          <span style={{ fontSize: 10, color: "var(--dim)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1}</span>
+                          <span style={{ fontSize: 10, color: "var(--text)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1}</span>
                           <span style={{ color: p1col }}>{liveNames[m.p1]}</span> <span style={{ color: "var(--dim)", fontSize: 14 }}>vs</span> <span style={{ color: p2col }}>{liveNames[m.p2]}</span>
                         </div>
                         {/* First nine result */}
                         <div style={{ background: "var(--input)", borderRadius: 6, padding: "6px 10px", marginBottom: 10, fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
-                          <span style={{ color: "var(--dim)" }}>{firstNineLabel}: </span>
+                          <span style={{ color: "var(--text)" }}>{firstNineLabel}: </span>
                           {firstNineWinner !== null
                             ? <span style={{ color: firstNineWinCol, fontWeight: "700" }}>{liveNames[firstNineWinner]} {Math.abs(netHoles)} UP ({p1wins}W–{p2wins}W)</span>
                             : <span style={{ color: "var(--text)", fontWeight: "700" }}>All Square ({p1wins}W–{p2wins}W)</span>
@@ -2281,10 +2452,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         </div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                           <div>
-                            <span style={{ fontSize: 12, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>{secondNineLabel} strokes</span>
+                            <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{secondNineLabel} strokes</span>
                             <div style={{ fontSize: 12, fontFamily: "'DM Sans', sans-serif", marginTop: 2 }}>
                               {currentVal === 0
-                                ? <span style={{ color: "var(--dim)" }}>Scratch</span>
+                                ? <span style={{ color: "var(--text)" }}>Scratch</span>
                                 : currentVal > 0
                                   ? <><span style={{ color: givercol, fontWeight:"600" }}>{liveNames[giver]}</span><span style={{ color:"var(--muted)" }}> gives </span><span style={{ color: receivercol, fontWeight:"600" }}>{liveNames[receiver]}</span><span style={{ color:"var(--muted)" }}> {Math.abs(currentVal)} stroke{Math.abs(currentVal)!==1?"s":""}</span></>
                                   : <><span style={{ color: givercol, fontWeight:"600" }}>{liveNames[giver]}</span><span style={{ color:"var(--neg)" }}> now gives </span><span style={{ color: receivercol, fontWeight:"600" }}>{liveNames[receiver]}</span><span style={{ color:"var(--neg)" }}> {Math.abs(currentVal)} stroke{Math.abs(currentVal)!==1?"s":""}</span></>
@@ -2317,7 +2488,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         </div>
         <div style={{ padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: "var(--dim)", letterSpacing: 2 }}>HOLE</span>
+            <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: "var(--text)", letterSpacing: 2 }}>HOLE</span>
             <select value={holeIdx} style={{ ...S.sel, fontSize: 22, fontWeight: "bold", color: "var(--text)", padding: "2px 8px", fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 1 }}
               onChange={e => { const i = Number(e.target.value); if (!inPlay[i]) window.scrollTo(0,0); setHoleIdx(i); setView("hole"); }}>
               {Array.from({length:18}, (_,i) => (
@@ -2326,7 +2497,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             </select>
             <div>
               <span style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 16, fontWeight: "600", color: "var(--text)" }}>Par {h.par}</span>
-              <span style={{ fontSize: 16, color: "var(--muted)", marginLeft: 6, fontWeight: "600" }}>SI {h.si}</span>
+              <span style={{ fontSize: 16, color: "var(--text)", marginLeft: 6, fontWeight: "600" }}>SI {h.si}</span>
             </div>
           </div>
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
@@ -2340,7 +2511,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   cursor: "pointer", transition: "all 0.15s",
                   border: `1px solid ${view===v ? COLORS[0] : "var(--border)"}`,
                   background: view===v ? COLORS[0] : "transparent",
-                  color: view===v ? "#000000" : "var(--dim)",
+                  color: view===v ? (isLight ? "#fff" : "#000000") : "var(--dim)",
                   fontWeight: view===v ? "bold" : "normal" }}>
                 {label}
               </button>
@@ -2405,6 +2576,26 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px" }}>
         {view === "hole" ? (
           <>
+            {/* HIO Banner */}
+            {res.isHIO && (
+              <div style={{ marginBottom: 14,
+                background: "linear-gradient(135deg, #1a0a00, #2d1500, #1a0a00)",
+                border: "2px solid #f59e0b",
+                boxShadow: "0 0 32px #f59e0b44, inset 0 1px 0 #fbbf2433",
+                animation: "hio-flash 1.2s ease-in-out 2" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", animation: "hio-slide 0.35s cubic-bezier(0.34,1.56,0.64,1)" }}>
+                  <div style={{ flexShrink: 0 }}>
+                    <TeeBoxLogo size={38} />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10, letterSpacing: 3, color: "#fbbf24", fontFamily: "'DM Sans', sans-serif", fontWeight: "700", textTransform: "uppercase", marginBottom: 3 }}>Par 3 · Hole {holeIdx + 1}</div>
+                    <div style={{ fontSize: 24, fontWeight: "900", color: "#fbbf24", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1, lineHeight: 1, textShadow: "0 0 16px #fbbf2066" }}>Hole In One</div>
+                    <div style={{ width: 32, height: 1.5, background: "#fbbf24", margin: "6px 0", borderRadius: 1, opacity: 0.4 }} />
+                    <div style={{ fontSize: 10, fontWeight: "600", color: "#e8f5e8", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1, opacity: 0.7, whiteSpace: "nowrap" }}>VEGAS · CT · BANKER — ALL BETS OFF</div>
+                  </div>
+                </div>
+              </div>
+            )}
             {/* Score entry — large touch targets */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
               <div className="sect-title" style={{ fontSize: 13, color: "var(--accent)", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>Gross Scores</div>
@@ -2434,7 +2625,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                       const strokeColor = strokes === 2 ? (isLight?"#16a34a":COLORS[0]) : strokes === 1 ? (isLight?"#16a34a":"#6ab87a") : "var(--dim)";
                       const strokeWeight = strokes > 0 ? "600" : "400";
                       return (
-                        <div style={{ fontSize: N>=5?10:13, fontWeight: "600", color: "var(--dim)" }}>
+                        <div style={{ fontSize: N>=5?10:13, fontWeight: "600", color: "var(--text)" }}>
                           {N>=5 ? liveHcps[pi] : `HCP ${liveHcps[pi]}`}
                           <span style={{ color: strokeColor, fontWeight: strokeWeight, marginLeft: 2 }}>
                             {strokes > 0 ? `+${strokes}` : "·"}
@@ -2468,7 +2659,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   const nettDiff = n !== null ? n - h.par : null;
                   return (
                     <div key={pi} style={{ textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "4px 2px 6px", border: "1px solid var(--border)" }}>
-                      <div style={{ fontSize: 10, color: "var(--dim)", marginBottom: 2 }}>NETT</div>
+                      <div style={{ fontSize: 10, color: "var(--text)", marginBottom: 2 }}>NETT</div>
                       {n !== null ? <ScoreBadge score={n} diff={nettDiff} /> : <div style={{ fontSize: 18, color: "#2a4a2a" }}>—</div>}
                     </div>
                   );
@@ -2477,7 +2668,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             </div>
             {/* Vegas */}
             {games.vegas && <div style={{ opacity: inPlay[holeIdx] ? 1 : 0.4, pointerEvents: inPlay[holeIdx] ? "auto" : "none" }}><Sect title="Vegas — Teams">
-              <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 8 }}>
+              <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 8 }}>
                 Pick <span style={{ color: "var(--accent)", fontWeight: "600" }}>{liveNames[vp[0]]}</span>'s partner
               </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
@@ -2495,7 +2686,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   );
                 })}
               </div>
-              <div style={{ fontSize: 17, fontWeight: "700", color: "var(--dim)", marginBottom: 8 }}>
+              <div style={{ fontSize: 17, fontWeight: "700", color: "var(--text)", marginBottom: 8 }}>
                 <span style={{ color: "var(--accent)" }}>{liveNames[vTeams[holeIdx][0][0]]}</span>+<span style={{ color: COLORS[vTeams[holeIdx][0][1]] }}>{liveNames[vTeams[holeIdx][0][1]]}</span>
                 {" "}<span style={{ color: "#2a4a2a" }}>vs</span>{" "}
                 <span style={{ color: isLight?COLORS_LIGHT[vTeams[holeIdx][1][0]]:COLORS[vTeams[holeIdx][1][0]] }}>{liveNames[vTeams[holeIdx][1][0]]}</span>+<span style={{ color: isLight?COLORS_LIGHT[vTeams[holeIdx][1][1]]:COLORS[vTeams[holeIdx][1][1]] }}>{liveNames[vTeams[holeIdx][1][1]]}</span>
@@ -2510,14 +2701,14 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 const loserName  = winnerIsA != null ? (winnerIsA ? t1name : t0name) : null;
                 const StepRow = ({ label, children }) => (
                   <div style={{ borderBottom: "1px solid var(--border)", padding: "10px 12px" }}>
-                    <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: 2, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
+                    <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 2, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>{label}</div>
                     {children}
                   </div>
                 );
                 const NumBadge = ({ val, flipped, winner }) => (
                   <div style={{ textAlign: "center" }}>
                     <div style={{ fontSize: 28, fontWeight: "700", lineHeight: 1,
-                      color: flipped ? "#f97316" : winner ? COLORS[0] : "#e8f5e8",
+                      color: flipped ? "#f97316" : winner ? (isLight ? COLORS_LIGHT[0] : COLORS[0]) : "var(--text)",
                       fontFamily: "'Bebas Neue', sans-serif" }}>{val}</div>
                     {flipped && <div style={{ fontSize: 10, color: "#f97316", marginTop: 2 }}>FLIPPED</div>}
                     {winner && !flipped && <div style={{ fontSize: 10, color: "var(--accent)", marginTop: 2 }}>WINNER</div>}
@@ -2525,20 +2716,66 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 );
                 return (
                   <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
-                    {/* Step 1 — Vegas numbers */}
-                    <StepRow label="STEP 1 — VEGAS NUMBERS (lo digit first)">
+                    {/* Rule label */}
+                    <div style={{ padding: "6px 12px", background: "var(--card)", borderBottom: "1px solid var(--border)", fontSize: 10, color: "var(--text)",or: "var(--dim)", letterSpacing: 2, fontFamily: "'DM Sans', sans-serif" }}>
+                      {vegasRules === "classic" ? "CLASSIC RULES" : vegasRules === "double" ? "AGGRESSIVE RULES" : "STANDARD RULES"}
+                    </div>
+                    {/* Council/Double: Step 1 — Gross flip check + flipped numbers */}
+                    {vegasRules !== "classic" && (
+                      <StepRow label="STEP 1 — GROSS FLIP CHECK">
+                        {(() => {
+                          const gvA2 = vegasNum(parseInt(res.g[t0[0]],10), parseInt(res.g[t0[1]],10));
+                          const gvB2 = vegasNum(parseInt(res.g[t1[0]],10), parseInt(res.g[t1[1]],10));
+                          const tA = r.trigA || teamTrigger(res.g[t0[0]], res.g[t0[1]], h.par);
+                          const tB = r.trigB || teamTrigger(res.g[t1[0]], res.g[t1[1]], h.par);
+                          const bothTriggered = tA.flip && tB.flip;
+                          const flipAppliedA = r.flipA; // A's number was flipped by B
+                          const flipAppliedB = r.flipB; // B's number was flipped by A
+                          const effGvA = flipAppliedA ? flipNum(gvA2) : gvA2;
+                          const effGvB = flipAppliedB ? flipNum(gvB2) : gvB2;
+                          return (
+                            <div>
+                              <div style={{ display: "flex", justifyContent: "space-around", marginBottom: 6 }}>
+                                <div style={{ textAlign: "center" }}>
+                                  <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "700", marginBottom: 2 }}>{t0name}</div>
+                                  <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>gross: {gvA2}</div>
+                                  <div style={{ fontSize: 10, color: tA.flip ? "#f97316" : "var(--dim)", marginBottom: 4 }}>{tA.flip ? "triggers flip" + (tA.mult > 1 ? " ×"+tA.mult : "") + (tA.bonus > 0 ? " +"+tA.bonus : "") : "no trigger"}</div>
+                                  {flipAppliedA && <><div style={{ fontSize: 10, color: "#f97316" }}>→ flipped to</div><div style={{ fontSize: 28, fontWeight: "700", color: "#f97316", fontFamily: "'Bebas Neue', sans-serif" }}>{effGvA}</div></>}
+                                  {!flipAppliedA && <div style={{ fontSize: 28, fontWeight: "700", color: "var(--text)", fontFamily: "'Bebas Neue', sans-serif" }}>{gvA2}</div>}
+                                </div>
+                                <div style={{ textAlign: "center", alignSelf: "center" }}>
+                                  <div style={{ fontSize: 12, color: "var(--dim)" }}>vs</div>
+                                </div>
+                                <div style={{ textAlign: "center" }}>
+                                  <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "700", marginBottom: 2 }}>{t1name}</div>
+                                  <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>gross: {gvB2}</div>
+                                  <div style={{ fontSize: 10, color: tB.flip ? "#f97316" : "var(--dim)", marginBottom: 4 }}>{tB.flip ? "triggers flip" + (tB.mult > 1 ? " ×"+tB.mult : "") + (tB.bonus > 0 ? " +"+tB.bonus : "") : "no trigger"}</div>
+                                  {flipAppliedB && <><div style={{ fontSize: 10, color: "#f97316" }}>→ flipped to</div><div style={{ fontSize: 28, fontWeight: "700", color: "#f97316", fontFamily: "'Bebas Neue', sans-serif" }}>{effGvB}</div></>}
+                                  {!flipAppliedB && <div style={{ fontSize: 28, fontWeight: "700", color: "var(--text)", fontFamily: "'Bebas Neue', sans-serif" }}>{gvB2}</div>}
+                                </div>
+                              </div>
+                              {bothTriggered && vegasRules === "council" && <div style={{ fontSize: 11, color: "#f97316", textAlign: "center", fontFamily: "'DM Sans', sans-serif" }}>Both triggered — flips cancel out</div>}
+                              {bothTriggered && vegasRules === "double" && <div style={{ fontSize: 11, color: "#f97316", textAlign: "center", fontFamily: "'DM Sans', sans-serif" }}>Both triggered — both flips apply</div>}
+                              {!tA.flip && !tB.flip && <div style={{ fontSize: 11, color: "var(--text)", textAlign: "center", fontFamily: "'DM Sans', sans-serif" }}>No flip triggered</div>}
+                            </div>
+                          );
+                        })()}
+                      </StepRow>
+                    )}
+                    {/* Step 1 (classic) / Step 2 (council/double) — Nett Vegas numbers */}
+                    <StepRow label={vegasRules === "classic" ? "STEP 1 — NETT VEGAS NUMBERS" : "STEP 2 — NETT VEGAS NUMBERS"}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around" }}>
                         <div style={{ textAlign: "center" }}>
-                          <div style={{ fontSize: 18, color: "var(--muted)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t0name}</div>
-                          <div style={{ fontSize: 36, fontWeight: "700", color: "var(--text)", fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2 }}>{r.vA}</div>
+                          <div style={{ fontSize: 18, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t0name}</div>
+                          <NumBadge val={vegasRules === "classic" ? r.vA : r.effA} flipped={false} winner={!r.tied && winnerIsA && (vegasRules !== "classic" || (!r.flipA && !r.flipB))} />
                         </div>
                         <div style={{ textAlign: "center" }}>
                           <div style={{ fontSize: 13, color: r.tied ? "#60a5fa" : "#3a6a3a", fontFamily: "'DM Sans', sans-serif", fontWeight: r.tied ? "700" : "400" }}>{r.tied ? "TIED" : "vs"}</div>
                           {r.tied && <div style={{ fontSize: 10, color: "#60a5fa", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>check gross</div>}
                         </div>
                         <div style={{ textAlign: "center" }}>
-                          <div style={{ fontSize: 18, color: "var(--muted)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t1name}</div>
-                          <div style={{ fontSize: 36, fontWeight: "700", color: "var(--text)", fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2 }}>{r.vB}</div>
+                          <div style={{ fontSize: 18, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t1name}</div>
+                          <NumBadge val={vegasRules === "classic" ? r.vB : r.effB} flipped={false} winner={!r.tied && !winnerIsA && (vegasRules !== "classic" || (!r.flipA && !r.flipB))} />
                         </div>
                       </div>
                     </StepRow>
@@ -2550,7 +2787,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         </div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around" }}>
                           <div style={{ textAlign: "center" }}>
-                            <div style={{ fontSize: 18, color: "var(--muted)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t0name}</div>
+                            <div style={{ fontSize: 18, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t0name}</div>
                             <div style={{ fontSize: 28, fontWeight: "700", color: r.grossWinnerIsA ? COLORS[0] : "#e8f5e8", fontFamily: "'Bebas Neue', sans-serif" }}>
                               {vegasNum(parseInt(res.g[t0[0]],10), parseInt(res.g[t0[1]],10))}
                             </div>
@@ -2558,7 +2795,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                           </div>
                           <div style={{ fontSize: 13, color: "#3a6a3a" }}>vs</div>
                           <div style={{ textAlign: "center" }}>
-                            <div style={{ fontSize: 18, color: "var(--muted)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t1name}</div>
+                            <div style={{ fontSize: 18, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t1name}</div>
                             <div style={{ fontSize: 28, fontWeight: "700", color: !r.grossWinnerIsA ? COLORS[0] : "#e8f5e8", fontFamily: "'Bebas Neue', sans-serif" }}>
                               {vegasNum(parseInt(res.g[t1[0]],10), parseInt(res.g[t1[1]],10))}
                             </div>
@@ -2567,9 +2804,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         </div>
                       </StepRow>
                     )}
-                    {/* Step 3 — Flip (only if applicable) */}
-                    {(r.flipA || r.flipB) && (
-                      <StepRow label="STEP 2 — FLIP (winning team flips loser's number)">
+                    {/* Classic only: Step 2 — Flip */}
+                    {vegasRules === "classic" && (r.flipA || r.flipB) && (
+                      <StepRow label="STEP 2 — FLIP (winner flips loser nett)">
                         <div style={{ fontSize: 12, color: "#aaa", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
                           {winnerName} triggered a flip
                         </div>
@@ -2582,30 +2819,44 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                     )}
                     {/* Step 3 or 4 — Difference & multiplier */}
                     {!tied && (
-                      <StepRow label={`STEP ${r.flipA || r.flipB ? "3" : "2"} — DIFFERENCE${r.mult > 1 ? " × MULTIPLIER" : ""}`}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 14, color: "#aaa", fontFamily: "'DM Sans', sans-serif" }}>
-                            |{r.effA} − {r.effB}| = <span style={{ color: "var(--text)", fontWeight: "700" }}>{Math.abs(r.effA - r.effB)}</span>
-                          </span>
-                          {r.mult > 1 && (
-                            <span style={{ fontSize: 14, color: "#e879f9", fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>
-                              × {r.mult} = <span style={{ color: "var(--text)" }}>{Math.abs(r.effA - r.effB) * r.mult} pts</span>
-                            </span>
-                          )}
-                          {r.mult === 1 && (
-                            <span style={{ fontSize: 14, color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>
-                              = <strong>{Math.abs(r.effA - r.effB)} pts</strong>
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ marginTop: 6, fontSize: 12, color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>
-                          🏆 {winnerName} wins {Math.abs(r.effA - r.effB) * r.mult} pt{Math.abs(r.effA - r.effB) * r.mult !== 1 ? "s" : ""}
-                        </div>
+                      <StepRow label={vegasRules === "classic" ? `STEP ${r.flipA || r.flipB ? "3" : "2"} — DIFFERENCE${r.mult > 1 ? " × MULTIPLIER" : ""}` : `STEP 3 — DIFFERENCE${r.mult > 1 ? " × MULTIPLIER" : ""}`}>
+                        {(() => {
+                          const dA = (vegasRules === "double" && r.effForDiffA !== undefined) ? r.effForDiffA : r.effA;
+                          const dB = (vegasRules === "double" && r.effForDiffB !== undefined) ? r.effForDiffB : r.effB;
+                          const diff = Math.abs(dA - dB);
+                          return (
+                            <div>
+                              {vegasRules === "double" && (dA !== r.effA || dB !== r.effB) && (
+                                <div style={{ fontSize: 12, color: "#f97316", fontFamily: "'DM Sans', sans-serif", marginBottom: 6 }}>
+                                  Winner reverts to original: {winnerIsA ? dA : dB} (was {winnerIsA ? r.effA : r.effB})
+                                </div>
+                              )}
+                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                                <span style={{ fontSize: 14, color: "#aaa", fontFamily: "'DM Sans', sans-serif" }}>
+                                  |{dA} − {dB}| = <span style={{ color: "var(--text)", fontWeight: "700" }}>{diff}</span>
+                                </span>
+                                {r.mult > 1 && (
+                                  <span style={{ fontSize: 14, color: "#e879f9", fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>
+                                    × {r.mult} = <span style={{ color: "var(--text)" }}>{diff * r.mult} pts</span>
+                                  </span>
+                                )}
+                                {r.mult === 1 && (
+                                  <span style={{ fontSize: 14, color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>
+                                    = <strong>{diff} pts</strong>
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ marginTop: 6, fontSize: 12, color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>
+                                🏆 {winnerName} wins {diff * r.mult} pt{diff * r.mult !== 1 ? "s" : ""}
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </StepRow>
                     )}
                     {/* Bonus step */}
                     {(r.bonusA > 0 || r.bonusB > 0) && (
-                      <StepRow label={r.tied ? "STEP 3 — BONUS" : `STEP ${r.flipA || r.flipB ? "4" : "3"} — BONUS`}>
+                      <StepRow label={r.tied ? "STEP 3 — BONUS" : vegasRules === "classic" ? `STEP ${r.flipA || r.flipB ? "4" : "3"} — BONUS` : "STEP 4 — BONUS"}>
                         <div style={{ fontSize: 12, color: "#aaa", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>
                           {r.bonusA > 0
                             ? `${t0name} earned a +${r.bonusA} pt bonus`
@@ -2615,7 +2866,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                     )}
                     {/* Final result */}
                     <div style={{ padding: "10px 12px" }}>
-                      <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: 2, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
+                      <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 2, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
                         {tied ? "RESULT — TIED" : r.tied ? "RESULT — NETT TIED (BONUS ONLY)" : "RESULT"}
                       </div>
                       <div style={{ display: "grid", gridTemplateColumns: `repeat(4,1fr)`, gap: 6 }}>
@@ -2642,7 +2893,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               <div style={{ opacity: inPlay[holeIdx] ? 1 : 0.4, pointerEvents: inPlay[holeIdx] ? "auto" : "none" }}>
               <Sect title="Banker">
                 <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 8 }}>Banker</div>
+                  <div style={{ fontSize: 14, color: "var(--text)", fontWeight: "600", marginBottom: 8 }}>Banker</div>
                   <div style={{ display: "flex", gap: 6 }}>
                     {vp.map(pi => (
                       <button key={pi} style={{ flex: 1, padding: "12px 0", borderRadius: 8, cursor: "pointer", fontSize: 13,
@@ -2657,7 +2908,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   </div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 8 }}>Multipliers (tap to cycle 1→2→3)</div>
+                  <div style={{ fontSize: 14, color: "var(--text)", fontWeight: "600", marginBottom: 8 }}>Multipliers (tap to cycle 1→2→3)</div>
                   <div style={{ display: "flex", gap: 6 }}>
                     {vp.map(pi => (
                       <button key={pi} style={{ flex: 1, padding: "16px 0", borderRadius: 8, cursor: "pointer",
@@ -2672,7 +2923,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   </div>
                   {/* Effective matchup multipliers */}
                   <div style={{ marginTop: 10, background: "var(--input)", borderRadius: 8, padding: "8px 10px", border: "1px solid var(--border)" }}>
-                    <div style={{ fontSize: 10, color: "var(--dim)", letterSpacing: 2, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>STAKES PER MATCHUP</div>
+                    <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 2, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>STAKES PER MATCHUP</div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {vp.filter(pi => pi !== banker[holeIdx]).map(pi => {
                         const bMult = p3mult[holeIdx][banker[holeIdx]];
@@ -2680,7 +2931,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         const effective = bMult * pMult;
                         return (
                           <div key={pi} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <span style={{ fontSize: 16, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>
+                            <span style={{ fontSize: 16, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>
                               <span style={{ color: isLight?COLORS_LIGHT[banker[holeIdx]]:COLORS[banker[holeIdx]] }}>{liveNames[banker[holeIdx]]}</span>
                               {" vs "}
                               <span style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi] }}>{liveNames[pi]}</span>
@@ -2726,9 +2977,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   return (
                     <div key={mi} style={{ background: "var(--card)", borderRadius: 10, padding: "12px 14px", marginBottom: 10, border: `2px solid ${isLight?"#888":"#3a5a3a"}` }}>
                       <div style={{ fontSize: 18, fontWeight: "800", color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
-                        <span style={{ fontSize: 11, color: "var(--dim)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isStroke ? "MATCH PLAY" : "NASSAU"}</span>
+                        <span style={{ fontSize: 11, color: "var(--text)", fontWeight: "600", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isStroke ? "MATCH PLAY" : "NASSAU"}</span>
                         <span style={{ color: p1col }}>{liveNames[m.p1]}</span> <span style={{ color: "var(--dim)", fontSize: 14 }}>vs</span> <span style={{ color: p2col }}>{liveNames[m.p2]}</span>
-                        <span style={{ fontSize: 12, fontWeight: "500", color: "var(--muted)", marginLeft: 6 }}>{(() => {
+                        <span style={{ fontSize: 12, fontWeight: "500", color: "var(--text)", marginLeft: 6 }}>{(() => {
                           const eff = holeIdx < 9 ? m.strokesFront : m.strokesBack;
                           if (eff === 0) return "scratch";
                           const giver = eff > 0 ? m.p1 : m.p2;
@@ -2829,7 +3080,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                               <div style={{ fontSize: 10, color: gdbSeg.dormie ? "var(--accent)" : "var(--dim)", letterSpacing: 1, fontWeight: "700" }}>DORMIE ×1</div>
                               <div style={{ fontWeight: "700", fontSize: 12 }}>
                                 {gdbSeg.dormie
-                                  ? <><div style={{ fontSize: 9, color: "var(--dim)" }}>from H{gdbSeg.dormie.startHole}</div><span style={{ color: "var(--accent)" }}>{segLabel(gdbSeg.dormie)}</span></>
+                                  ? <><div style={{ fontSize: 9, color: "var(--muted)" }}>from H{gdbSeg.dormie.startHole}</div><span style={{ color: "var(--accent)" }}>{segLabel(gdbSeg.dormie)}</span></>
                                   : <span style={{ color: "var(--dim)" }}>—</span>}
                               </div>
                             </div>
@@ -2837,7 +3088,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                               <div style={{ fontSize: 10, color: gdbSeg.buy ? "var(--accent)" : "var(--dim)", letterSpacing: 1, fontWeight: "700" }}>BYE ×1</div>
                               <div style={{ fontWeight: "700", fontSize: 12 }}>
                                 {gdbSeg.buy
-                                  ? <><div style={{ fontSize: 9, color: "var(--dim)" }}>from H{gdbSeg.buy.startHole}</div><span style={{ color: "var(--accent)" }}>{segLabel(gdbSeg.buy)}</span></>
+                                  ? <><div style={{ fontSize: 9, color: "var(--muted)" }}>from H{gdbSeg.buy.startHole}</div><span style={{ color: "var(--accent)" }}>{segLabel(gdbSeg.buy)}</span></>
                                   : <span style={{ color: "var(--dim)" }}>—</span>}
                               </div>
                             </div>
@@ -2849,8 +3100,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 })}
               </div>
             )}
-            {/* Points this hole — only when 2+ players */}
-            {N > 1 && (
+            {/* Points this hole — only when 2+ players and at least one game active */}
+            {N > 1 && !!(games.vegas || games.ct || (games.p3 && h.par === 3) || (games.six && N === 3)) && (
             <Sect title={`Hole ${holeIdx+1} Points`}>
               <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
                   <div style={{ display: "grid", gridTemplateColumns: `100px repeat(4, 1fr)`, borderBottom: "1px solid var(--border)" }}>
@@ -2948,7 +3199,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           </button>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minWidth: 60 }}>
             <div style={{ fontSize: 10, color: "#3a6a3a", fontFamily: "'DM Sans', sans-serif" }}>{completedCount}/18</div>
-            <div style={{ fontSize: 11, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>played</div>
+            <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>played</div>
           </div>
           <button className="hole-nav"
             disabled={holeIdx===17}
@@ -3026,7 +3277,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
       {tab === "board" && (
         <>
           {isSolo && (
-            <div style={{ textAlign: "center", padding: "20px", color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", fontSize: 14, background: "var(--card)", borderRadius: 8, marginBottom: 14 }}>
+            <div style={{ textAlign: "center", padding: "20px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontSize: 14, background: "var(--card)", borderRadius: 8, marginBottom: 14 }}>
               Score keeping mode — no betting active
             </div>
           )}
@@ -3039,7 +3290,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               </div>
               {[["Vegas","vegas",vegasCum,vegasVal],["Cut Throat","ct",ctCum,ctVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
                 <div key={label} style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ padding: "5px 4px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>{label}</div>
+                  <div style={{ padding: "5px 4px", fontSize: 13, color: "var(--text)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>{label}</div>
                   {RP.map(i => {
                     const v = cum[i]*val;
                     return <div key={i} style={{ padding: "5px 3px", textAlign: "center", fontSize: 14, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
@@ -3048,7 +3299,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               ))}
               {adjustments.some(a=>a!==0) && (
                 <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ padding: "5px 6px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center" }}>Adj</div>
+                  <div style={{ padding: "5px 6px", fontSize: 13, color: "var(--text)", fontWeight: "600", display: "flex", alignItems: "center" }}>Adj</div>
                   {RP.map(i => {
                     const v=adjustments[i];
                     return <div key={i} style={{ padding: "5px 3px", textAlign: "center", fontSize: 14, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a" }}>{v>0?"+":""}{v||"—"}</div>;
@@ -3057,7 +3308,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               )}
               {/* Subtotal — Vegas/CT/Banker */}
               <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, background: "var(--card)", borderBottom: (matchupEnabled||games.six) ? "2px solid var(--border2)" : "none" }}>
-                <div style={{ padding: "5px 6px", fontSize: 11, color: "var(--muted)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>
+                <div style={{ padding: "5px 6px", fontSize: 13, color: "var(--text)", fontWeight: "700", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>
                   {(matchupEnabled||games.six) ? "Subtotal" : "TOTAL"}
                 </div>
                 {RP.map(i => {
@@ -3071,10 +3322,10 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 return (
                   <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, borderBottom: matchupEnabled?"1px solid var(--border)":"none", background: isMeal?"var(--card)":"transparent" }}>
                     <div style={{ padding: "8px 10px", display: "flex", flexDirection: "column", justifyContent: "center" }}>
-                      <div style={{ fontSize: 11, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>6-Point</div>
+                      <div style={{ fontSize: 13, color: "var(--text)", fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>6-Point</div>
                       {isMeal
-                        ? <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>${sixVal}/pt or meal</div>
-                        : <div style={{ fontSize: 9, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>${sixVal}/pt</div>}
+                        ? <div style={{ fontSize: 9, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>${sixVal}/pt or meal</div>
+                        : <div style={{ fontSize: 9, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>${sixVal}/pt</div>}
                     </div>
                     {RP.map(i => {
                       const v = isMeal ? sixCum[i] : RP.reduce((sum,j) => j!==i ? sum+(sixCum[i]-sixCum[j])*sixVal : sum, 0);
@@ -3094,7 +3345,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 });
                 return (
                   <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
-                    <div style={{ padding: "8px 6px", fontSize: 11, color: "var(--muted)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>Matchup</div>
+                    <div style={{ padding: "8px 6px", fontSize: 13, color: "var(--text)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>Matchup</div>
                     {RP.map(i => {
                       const v = nassauPD[i];
                       return <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 16, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
@@ -3147,7 +3398,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
             <button onClick={() => setAdjustments(Array(RP.length).fill(0))} style={{ ...S.navBtn, width: "100%", marginTop: 12, fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>Reset Adjustments</button>
           </CollapseSect>
           {/* $ Over Round chart — bottom of totals */}
-          {(() => {
+          {(games.vegas || games.ct || games.p3) && (() => {
             const cumData = [];
             const running = Array(RP.length).fill(0);
             for (let hi = 0; hi < 18; hi++) {
@@ -3168,7 +3419,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
             const xStep = 20;
             return (
               <Sect title="$ Over Round">
-                <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
+                <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
                   Vegas / Cut Throat / Banker only — excludes 6-Point and Matchup
                 </div>
                 <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", padding: "12px 8px 8px", overflowX: "auto" }}>
@@ -3222,16 +3473,17 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
             </div>
             {results.map((r, hi) => {
               const active = inPlay[hi];
+              const isHIO = r.isHIO;
               const mult = r.vr?.mult > 1 ? `×${r.vr.mult}` : "";
               const bonus = (r.vr?.bonusA > 0 || r.vr?.bonusB > 0) ? `+${r.vr.bonusA || r.vr.bonusB}` : "";
               const trig = [mult, bonus].filter(Boolean).join(" ");
               return (
                 <div key={hi} onClick={() => onHole(hi)} style={{ display: "grid", gridTemplateColumns: `28px 56px 40px 36px repeat(4,1fr)`, borderBottom: "1px solid var(--border)", cursor: "pointer", opacity: active?1:0.35 }}>
                   <div style={S.td}>{hi+1}</div>
-                  <div style={{ ...S.td, fontSize: 10 }}>{vTeams[hi][0].map(i=>names[i][0]).join("")}|{vTeams[hi][1].map(i=>names[i][0]).join("")}</div>
-                  <div style={{ ...S.td, fontSize: 10 }}>{active&&r.vr?`${r.vr.effA}|${r.vr.effB}`:""}</div>
-                  <div style={{ ...S.td, fontSize: 10, color: trig?"#e879f9":"#4a7a4a", fontWeight: trig?"700":"400" }}>{active?trig:""}</div>
-                  {vp.map(i => { const v=active?r.vd[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{v!==0?(v>0?"+":"")+v:"—"}</div>; })}
+                  <div style={{ ...S.td, fontSize: 10 }}>{isHIO ? <span style={{ color: "#fbbf24", fontWeight: "700", fontSize: 9 }}>HIO</span> : `${vTeams[hi][0].map(i=>names[i][0]).join("")}|${vTeams[hi][1].map(i=>names[i][0]).join("")}`}</div>
+                  <div style={{ ...S.td, fontSize: 10 }}>{!isHIO && active && r.vr ? `${r.vr.effA}|${r.vr.effB}` : ""}</div>
+                  <div style={{ ...S.td, fontSize: 10, color: trig?"#e879f9":"#4a7a4a", fontWeight: trig?"700":"400" }}>{!isHIO && active ? trig : ""}</div>
+                  {vp.map(i => { const v=active&&!isHIO?r.vd[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{isHIO ? <span style={{ color: "#fbbf24", fontSize: 9 }}>—</span> : v!==0?(v>0?"+":"")+v:"—"}</div>; })}
                 </div>
               );
             })}
@@ -3254,11 +3506,12 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
             </div>
             {results.map((r, hi) => {
               const active = inPlay[hi];
+              const isHIO_ct = r.isHIO;
               return (
                 <div key={hi} onClick={() => onHole(hi)} style={{ display: "grid", gridTemplateColumns: `28px 28px repeat(4,1fr)`, borderBottom: "1px solid var(--border)", cursor: "pointer", opacity: active?1:0.35 }}>
                   <div style={S.td}>{hi+1}</div>
-                  <div style={S.td}>{holes[hi].par}</div>
-                  {vp.map(i => { const v=active?r.ct[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{v!==0?(v>0?"+":"")+v:"—"}</div>; })}
+                  <div style={{ ...S.td, color: isHIO_ct ? "#fbbf24" : "inherit", fontWeight: isHIO_ct ? "700" : "400", fontSize: isHIO_ct ? 9 : "inherit" }}>{isHIO_ct ? "HIO" : holes[hi].par}</div>
+                  {vp.map(i => { const v=active&&!isHIO_ct?r.ct[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{v!==0?(v>0?"+":"")+v:"—"}</div>; })}
                 </div>
               );
             })}
@@ -3281,10 +3534,11 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
             {results.map((r, hi) => {
               if (holes[hi].par !== 3) return null;
               const active = inPlay[hi];
+              const isHIO_p3 = r.isHIO;
               return (
                 <div key={hi} onClick={() => onHole(hi)} style={{ display: "grid", gridTemplateColumns: `28px repeat(4,1fr)`, borderBottom: "1px solid var(--border)", cursor: "pointer", opacity: active?1:0.35 }}>
-                  <div style={S.td}>{hi+1}</div>
-                  {vp.map(i => { const v=active?r.p3[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{v!==0?(v>0?"+":"")+v:"—"}</div>; })}
+                  <div style={{ ...S.td, color: isHIO_p3 ? "#fbbf24" : "inherit", fontWeight: isHIO_p3 ? "700" : "400", fontSize: isHIO_p3 ? 9 : "inherit" }}>{isHIO_p3 ? "HIO" : hi+1}</div>
+                  {vp.map(i => { const v=active&&!isHIO_p3?r.p3[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{v!==0?(v>0?"+":"")+v:"—"}</div>; })}
                 </div>
               );
             })}
@@ -3333,7 +3587,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               </div>
             )}
             {sixVal === 0 && (
-              <div style={{ padding: "10px 12px", background: "var(--card)", borderTop: "1px solid var(--border2)", fontSize: 12, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
+              <div style={{ padding: "10px 12px", background: "var(--card)", borderTop: "1px solid var(--border2)", fontSize: 12, color: "var(--text)",r: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>
                 Points only — settle outside
               </div>
             )}
@@ -3361,7 +3615,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               const dollarCol = dollarAmt > 0 ? (isLight?"#16a34a":COLORS[0]) : dollarAmt < 0 ? "var(--neg)" : "var(--dim)";
               return (
                 <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
-                  <span style={{ fontSize: 12, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", width: 90 }}>{label}</span>
+                  <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600", width: 90 }}>{label}</span>
                   <span style={{ fontSize: 13, fontWeight: "600", color: statusCol, fontFamily: "'DM Sans', sans-serif", flex: 1, textAlign: "center" }}>{statusText}</span>
                   <span style={{ fontSize: 14, fontWeight: "700", color: dollarCol, fontFamily: "'DM Sans', sans-serif", width: 56, textAlign: "right" }}>
                     {dollarAmt === 0 ? "—" : `${dollarAmt > 0 ? "+" : ""}$${dollarAmt}`}
@@ -3379,7 +3633,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                   <div style={{ fontSize: 16, fontWeight: "800", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                     <span style={{ color: p1col }}>{p1name}</span> <span style={{ color: "var(--dim)", fontSize: 13 }}>vs</span> <span style={{ color: p2col }}>{p2name}</span>
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--dim)", marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>
+                  <div style={{ fontSize: 11, color: "var(--text)", marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>
                     {isGDB
                       ? `Game/Dormie/Bye · $${m.stake}/unit · max $${m.stake*5}/9`
                       : isStroke
@@ -3416,7 +3670,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                   const holesL = s < 0 ? Math.abs(s) : 0;
                   return <>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
-                      <span style={{ fontSize: 12, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", width: 90 }}>Holes won</span>
+                      <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600", width: 90 }}>Holes won</span>
                       <span style={{ fontSize: 13, fontWeight: "600", color: s > 0 ? p1col : s < 0 ? p2col : "var(--dim)", fontFamily: "'DM Sans', sans-serif", flex: 1, textAlign: "center" }}>
                         {s === 0 ? "AS" : `${s > 0 ? p1name : p2name} +${Math.abs(s)}`}
                       </span>
@@ -3424,7 +3678,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                         {s === 0 ? "—" : `${s > 0 ? "+" : ""}$${Math.abs(s * m.stake)}`}
                       </span>
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>
+                    <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>
                       Net holes × ${m.stake}/hole
                     </div>
                   </>;
@@ -3439,7 +3693,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                       {seg9.dormie && segRow(`Dormie ×1 (H${seg9.dormie.startHole}+)`, seg9.dormie, dol9.dormieDollars)}
                       {seg9.buy    && segRow(`Bye ×1 (H${seg9.buy.startHole}+)`,    seg9.buy,    dol9.buyDollars)}
                       {!seg9.dormie && !seg9.buy && (
-                        <div style={{ fontSize: 11, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>No Dormie or Bye triggered</div>
+                        <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>No Dormie or Bye triggered</div>
                       )}
                     </div>
                   );
@@ -3456,6 +3710,88 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                     </span>
                   </div>
                 </div>
+                {/* Nett scorecard — Dohyo style */}
+                {r.holeWL && (() => {
+                  const sm = r.strokeMaps;
+                  const renderNine = (startHi, nineLabel) => {
+                    const holeNums = Array.from({length:9}, (_,i) => startHi+i);
+                    let running = 0;
+                    const hd = holeNums.map(hi => {
+                      const hole = holes[hi];
+                      const active = inPlay[hi];
+                      const strk = sm ? strokesForHole(hi, hole.si, sm) : {p1:0, p2:0};
+                      const g1 = parseInt(results[hi]?.g[m.p1], 10);
+                      const g2 = parseInt(results[hi]?.g[m.p2], 10);
+                      const cap = hole.par === 3 ? hole.par+3 : hole.par+4;
+                      const n1 = active && !isNaN(g1) && g1>0 ? Math.min(g1-strk.p1, cap) : null;
+                      const n2 = active && !isNaN(g2) && g2>0 ? Math.min(g2-strk.p2, cap) : null;
+                      const wl = active && n1!==null && n2!==null ? r.holeWL[hi] : 0;
+                      if (active && n1!==null && n2!==null) running += wl;
+                      return { hi, hole, active, n1, n2, wl, strk, run: active&&n1!==null&&n2!==null ? running : null };
+                    });
+                    const endStatus = running;
+                    const endCol = endStatus>0?p1col:endStatus<0?p2col:"var(--dim)";
+                    const endTxt = endStatus===0?"AS":`${endStatus>0?p1name.slice(0,5):p2name.slice(0,5)} ${Math.abs(endStatus)}UP`;
+                    const p1tot = hd.reduce((s,{active,n1})=>s+(active&&n1!==null?n1:0),0);
+                    const p2tot = hd.reduce((s,{active,n2})=>s+(active&&n2!==null?n2:0),0);
+                    const cS = (bg) => ({ padding:"3px 2px", textAlign:"center", fontSize:11, border:"1px solid var(--border)", background:bg||"var(--input)", minWidth:18 });
+                    const hS = { padding:"3px 2px", textAlign:"center", fontSize:10, color:"var(--muted)", fontWeight:"600", background:"var(--card)", border:"1px solid var(--border)" };
+                    return (
+                      <div style={{ marginTop:10, overflowX:"auto" }}>
+                        <div style={{ fontSize:10, color:"var(--accent)", letterSpacing:2, fontWeight:"700", fontFamily:"'DM Sans', sans-serif", marginBottom:4 }}>{nineLabel}</div>
+                        <table style={{ borderCollapse:"collapse", width:"100%" }}>
+                          <tbody>
+                            <tr>
+                              <td style={{ ...hS, textAlign:"left", paddingLeft:4, minWidth:44 }}></td>
+                              {holeNums.map(hi => <td key={hi} style={hS}>{hi+1}</td>)}
+                              <td style={{ ...hS, minWidth:28 }}>TOT</td>
+                            </tr>
+                            <tr>
+                              <td style={{ ...cS("var(--card)"), textAlign:"left", paddingLeft:4, fontWeight:"700", color:p1col, fontSize:11 }}>{p1name.slice(0,5)}</td>
+                              {hd.map(({hi,active,n1,n2,strk}) => {
+                                const win = n1!==null&&n2!==null&&n1<n2;
+                                return <td key={hi} style={{ ...cS(), color:active?(win?p1col:"var(--text)"):"var(--dim)", fontWeight:win?"700":"400", opacity:active?1:0.35 }}>
+                                  {active&&n1!==null?<>{n1}{strk.p1>0&&<sup style={{color:"var(--accent)",fontSize:8}}>+{strk.p1}</sup>}</>:"·"}
+                                </td>;
+                              })}
+                              <td style={{ ...cS("var(--card)"), fontWeight:"700", color:p1col }}>{p1tot||"·"}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ ...cS("var(--card)"), textAlign:"left", paddingLeft:4, fontWeight:"700", color:p2col, fontSize:11 }}>{p2name.slice(0,5)}</td>
+                              {hd.map(({hi,active,n1,n2,strk}) => {
+                                const win = n1!==null&&n2!==null&&n2<n1;
+                                return <td key={hi} style={{ ...cS("var(--bg)"), color:active?(win?p2col:"var(--text)"):"var(--dim)", fontWeight:win?"700":"400", opacity:active?1:0.35 }}>
+                                  {active&&n2!==null?<>{n2}{strk.p2>0&&<sup style={{color:"var(--accent)",fontSize:8}}>+{strk.p2}</sup>}</>:"·"}
+                                </td>;
+                              })}
+                              <td style={{ ...cS("var(--card)"), fontWeight:"700", color:p2col }}>{p2tot||"·"}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ ...cS("var(--card)"), textAlign:"left", paddingLeft:4, fontSize:10, color:"var(--muted)" }}>Res</td>
+                              {hd.map(({hi,active,n1,n2,wl},idx) => {
+                                const txt = !active||n1===null||n2===null?"·":wl===1?"W":wl===-1?"L":"H";
+                                const col = wl===1?p1col:wl===-1?p2col:"var(--dim)";
+                                const isLast = idx===8;
+                                return <td key={hi} style={{ ...cS("var(--card)"), color:active&&txt!=="·"?col:"var(--dim)", fontWeight:txt!=="·"?"700":"400", opacity:active?1:0.35 }}>
+                                  {isLast&&hd[idx].run!==null
+                                    ? <div style={{lineHeight:1.1}}><div>{txt}</div><div style={{color:endCol,fontSize:8,fontWeight:"700"}}>{endTxt}</div></div>
+                                    : txt}
+                                </td>;
+                              })}
+                              <td style={{ ...cS("var(--card)"), fontSize:9, color:endCol, fontWeight:"700", whiteSpace:"nowrap" }}>{endTxt}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  };
+                  return (
+                    <div style={{ marginTop:8, borderTop:"1px solid var(--border)", paddingTop:8 }}>
+                      {renderNine(0, "FRONT 9")}
+                      {renderNine(9, "BACK 9")}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
@@ -3468,7 +3804,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               <tr style={{ background: "var(--card)" }}>
                 <th style={{ ...S.th, padding: "5px 4px" }}>H</th>
                 <th style={{ ...S.th, padding: "5px 4px" }}>Par</th>
-                <th style={{ ...S.th, padding: "5px 4px", color: "var(--muted)" }}>SI</th>
+                <th style={{ ...S.th, padding: "5px 4px", color: "var(--text)" }}>SI</th>
                 {RP.map(i => (
                   <th key={i} style={{ ...S.th, padding: "5px 3px", fontSize: 13, fontWeight: "700", color: isLight?COLORS_LIGHT[i]:COLORS[i] }}>{names[i].slice(0,5)}</th>
                 ))}
@@ -3479,9 +3815,9 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 const active = inPlay[row];
                 return (
                   <tr key={row} style={{ background: row%2===0?"var(--input)":"var(--card)", opacity: active?1:0.4 }}>
-                    <td style={{ ...S.td, color: "var(--muted)", fontWeight: "600" }}>{row+1}</td>
-                    <td style={{ ...S.td, color: "var(--dim)" }}>{holes[row].par}</td>
-                    <td style={{ ...S.td, color: "var(--muted)", fontSize: 12 }}>{holes[row].si}</td>
+                    <td style={{ ...S.td, color: "var(--text)", fontWeight: "600" }}>{row+1}</td>
+                    <td style={{ ...S.td, color: "var(--text)" }}>{holes[row].par}</td>
+                    <td style={{ ...S.td, color: "var(--text)", fontSize: 12 }}>{holes[row].si}</td>
                     {RP.map(pi => {
                       const g = parseInt(results[row].g[pi], 10);
                       const diff = isNaN(g) ? null : g - holes[row].par;
@@ -3490,7 +3826,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                           {diff !== null
                             ? active
                               ? <ScoreBadge score={g} diff={diff} />
-                              : <span style={{ color: "var(--muted)", fontSize: 13, fontWeight: "400" }}>{g}</span>
+                              : <span style={{ color: "var(--text)", fontSize: 13, fontWeight: "400" }}>{g}</span>
                             : <span style={{ color: "var(--dim)" }}>—</span>}
                         </td>
                       );
@@ -3500,7 +3836,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               })}
               <tr style={{ background: "var(--card)", borderTop: "1px solid var(--border)", borderBottom: "2px solid #2a5a2a" }}>
                 <td style={{ ...S.td, fontWeight: "700", color: "var(--text)" }}>OUT</td>
-                <td style={{ ...S.td, fontWeight: "700", color: "var(--dim)" }}>{holes.slice(0,9).reduce((s,h)=>s+h.par,0)}</td>
+                <td style={{ ...S.td, fontWeight: "700", color: "var(--text)" }}>{holes.slice(0,9).reduce((s,h)=>s+h.par,0)}</td>
                 <td style={S.td} />
                 {RP.map(pi => {
                   const total = results.slice(0,9).reduce((s,r) => { const g=parseInt(r.g[pi],10); return s+(isNaN(g)?0:g); }, 0);
@@ -3511,9 +3847,9 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                 const active = inPlay[row];
                 return (
                   <tr key={row} style={{ background: row%2===0?"var(--input)":"var(--card)", opacity: active?1:0.4 }}>
-                    <td style={{ ...S.td, color: "var(--muted)", fontWeight: "600" }}>{row+1}</td>
-                    <td style={{ ...S.td, color: "var(--dim)" }}>{holes[row].par}</td>
-                    <td style={{ ...S.td, color: "var(--muted)", fontSize: 12 }}>{holes[row].si}</td>
+                    <td style={{ ...S.td, color: "var(--text)", fontWeight: "600" }}>{row+1}</td>
+                    <td style={{ ...S.td, color: "var(--text)" }}>{holes[row].par}</td>
+                    <td style={{ ...S.td, color: "var(--text)", fontSize: 12 }}>{holes[row].si}</td>
                     {RP.map(pi => {
                       const g = parseInt(results[row].g[pi], 10);
                       const diff = isNaN(g) ? null : g - holes[row].par;
@@ -3522,7 +3858,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
                           {diff !== null
                             ? active
                               ? <ScoreBadge score={g} diff={diff} />
-                              : <span style={{ color: "var(--muted)", fontSize: 13, fontWeight: "400" }}>{g}</span>
+                              : <span style={{ color: "var(--text)", fontSize: 13, fontWeight: "400" }}>{g}</span>
                             : <span style={{ color: "var(--dim)" }}>—</span>}
                         </td>
                       );
@@ -3532,7 +3868,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               })}
               <tr style={{ background: "var(--card)", borderTop: "1px solid var(--border)", borderBottom: "2px solid #2a5a2a" }}>
                 <td style={{ ...S.td, fontWeight: "700", color: "var(--text)" }}>IN</td>
-                <td style={{ ...S.td, fontWeight: "700", color: "var(--dim)" }}>{holes.slice(9,18).reduce((s,h)=>s+h.par,0)}</td>
+                <td style={{ ...S.td, fontWeight: "700", color: "var(--text)" }}>{holes.slice(9,18).reduce((s,h)=>s+h.par,0)}</td>
                 <td style={S.td} />
                 {RP.map(pi => {
                   const total = results.slice(9,18).reduce((s,r) => { const g=parseInt(r.g[pi],10); return s+(isNaN(g)?0:g); }, 0);
@@ -3541,7 +3877,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
               </tr>
               <tr style={{ background: "#071d07", borderTop: "1px solid var(--border2)" }}>
                 <td style={{ ...S.td, fontWeight: "700", color: "var(--accent)", fontSize: 13 }}>TOT</td>
-                <td style={{ ...S.td, fontWeight: "700", color: "var(--dim)", fontSize: 13 }}>{holes.reduce((s,h)=>s+h.par,0)}</td>
+                <td style={{ ...S.td, fontWeight: "700", color: "var(--text)", fontSize: 13 }}>{holes.reduce((s,h)=>s+h.par,0)}</td>
                 <td style={S.td} />
                 {RP.map(pi => {
                   const total = results.reduce((s,r) => { const g=parseInt(r.g[pi],10); return s+(isNaN(g)?0:g); }, 0);
@@ -3555,13 +3891,13 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, six
       {qrPayload && (
         <Sect title="QR Code — Share Round">
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 12, fontFamily: "'DM Sans', sans-serif" }}>
+            <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 12, fontFamily: "'DM Sans', sans-serif" }}>
               Scan to share full round data · cross-flight matchups · scorecard
             </div>
             <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
               <QRCodeDisplay payload={qrPayload} size={300} />
             </div>
-            <div style={{ fontSize: 10, color: "var(--dim)", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>
+            <div style={{ fontSize: 10, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>
               {qrPayload.length} chars · {names.join(" · ")}
             </div>
             <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(qrPayload).then(() => { const btn = document.getElementById('copy-payload-btn'); if(btn){btn.textContent='✓ Copied';setTimeout(()=>{btn.textContent='📋 Copy Payload';},1000);} }); }}
@@ -3641,7 +3977,7 @@ function InPlayToggle({ on, onToggle }) {
         <div style={{ fontSize: 15, fontWeight: "600", color: on?"var(--accent)":"var(--neg)", fontFamily: "'DM Sans', sans-serif" }}>
           {on ? "✓ In Play" : "✗ Not In Play"}
         </div>
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>
+        <div style={{ fontSize: 11, color: "var(--text)", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>
           {on ? "Hole counted in totals" : "Hole excluded from totals"}
         </div>
       </div>
@@ -3673,8 +4009,8 @@ const S = {
   dot: { width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, color: "#ffffff", fontWeight: "bold", fontSize: 14 },
   inp: { background: "var(--input)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", padding: "10px 12px", fontSize: 15, fontFamily: "'DM Sans', sans-serif", outline: "none" },
   sel: { background: "var(--input)", border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)", padding: "6px 8px", fontSize: 14, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", outline: "none" },
-  th: { padding: "8px 6px", color: "var(--dim)", fontWeight: "500", textAlign: "center", fontSize: 11, fontFamily: "'DM Sans', sans-serif" },
-  td: { padding: "5px 3px", textAlign: "center", color: "var(--muted)", fontSize: 13, fontFamily: "'DM Sans', sans-serif" },
+  th: { padding: "8px 6px", color: "var(--text)", fontWeight: "500", textAlign: "center", fontSize: 11, fontFamily: "'DM Sans', sans-serif" },
+  td: { padding: "5px 3px", textAlign: "center", color: "var(--text)", fontSize: 13, fontFamily: "'DM Sans', sans-serif" },
   navBtn: { padding: "12px", background: "var(--card)", color: "var(--accent)", border: "1px solid var(--border2)", borderRadius: 8, cursor: "pointer", fontSize: 13, fontFamily: "'DM Sans', sans-serif" },
   pmBtnInline: { width: 40, height: 40, background: "transparent", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 22, display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.1s", fontFamily: "'DM Sans', sans-serif" },
   pmBtnLarge: { width: "100%", padding: "10px 0", background: "var(--card)", color: "var(--accent)", border: "1px solid var(--border2)", borderRadius: 8, cursor: "pointer", fontSize: 22, transition: "all 0.1s", fontFamily: "'DM Sans', sans-serif" },
