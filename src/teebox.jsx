@@ -2264,25 +2264,16 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     if (!inPlay.every(v => v)) return;
     hasLoggedRef.current = true;
     const games_str = Object.entries(games).filter(([,v])=>v).map(([k])=>k).join(',');
-    fetch('https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc',
-        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc',
-        'Prefer': 'resolution=merge-duplicates',
-        'on_conflict': 'round_id',
-      },
-      body: JSON.stringify({
-        round_id: roundId,
-        course: config.courseName || 'Custom',
-        players: liveNames.slice(0, N),
-        hcps: liveHcps.slice(0, N),
-        games: games_str,
-        player_count: N,
-        logged_at_sgt: new Date().toLocaleString("en-SG", {timeZone: "Asia/Singapore"}),
-      }),
-    }).catch(() => {}); // silent — never block user
+    const sgt = new Date().toLocaleString("en-SG", {timeZone: "Asia/Singapore"});
+    const rid = String(roundId);
+    const SUPA_URL = 'https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log';
+    const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc';
+    const SUPA_HDR = { 'Content-Type': 'application/json', 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY };
+    const payload = { round_id: rid, course: config.courseName || 'Custom', players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), games: games_str, player_count: N, holes_played: 18, logged_at_sgt: sgt };
+    fetch(SUPA_URL + '?round_id=eq.' + rid, { method: 'PATCH', headers: { ...SUPA_HDR, 'Prefer': 'return=representation' }, body: JSON.stringify({ players: payload.players, hcps: payload.hcps, holes_played: 18, logged_at_sgt: sgt }) })
+      .then(r => r.json())
+      .then(rows => { if (!rows || rows.length === 0) { fetch(SUPA_URL, { method: 'POST', headers: SUPA_HDR, body: JSON.stringify(payload) }).catch(() => {}); } })
+      .catch(() => {});
   }, [inPlay]);
   const results = holes.map((h, hi) => {
     const g = gross[hi];
@@ -2525,7 +2516,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           </div>
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
             {[["hole","HOLE"],["totals","$"]].map(([v,label]) => (
-              <button key={v} className="tab-btn" onClick={() => { setView(v); window.scrollTo(0,0); if (v === "totals") { const games_str = Object.entries(games).filter(([,val])=>val).map(([k])=>k).join(','); const sgt = new Date().toLocaleString('en-SG', {timeZone:'Asia/Singapore'}); const rid = String(roundId); fetch('https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log?round_id=eq.' + rid, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc' }, body: JSON.stringify({ players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), logged_at_sgt: sgt }) }).then(r => { if (r.status === 404 || r.status === 200 && r.headers.get('content-range') === '*/0') { fetch('https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log', { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc' }, body: JSON.stringify({ round_id: rid, course: config.courseName || 'Custom', players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), games: games_str, player_count: N, logged_at_sgt: sgt }) }).catch(() => {}); } }).catch(() => {}); } }}
+              <button key={v} className="tab-btn" onClick={() => { setView(v); window.scrollTo(0,0); if (v === "totals") { const games_str = Object.entries(games).filter(([,val])=>val).map(([k])=>k).join(','); const sgt = new Date().toLocaleString('en-SG', {timeZone:'Asia/Singapore'}); const rid = String(roundId); const SUPA_URL = 'https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log'; const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc'; const SUPA_HDR = { 'Content-Type': 'application/json', 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }; fetch(SUPA_URL + '?round_id=eq.' + rid, { method: 'PATCH', headers: { ...SUPA_HDR, 'Prefer': 'return=representation' }, body: JSON.stringify({ players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), logged_at_sgt: sgt, holes_played: inPlay.filter(Boolean).length }) }).then(r => r.json()).then(rows => { if (!rows || rows.length === 0) { fetch(SUPA_URL, { method: 'POST', headers: SUPA_HDR, body: JSON.stringify({ round_id: rid, course: config.courseName || 'Custom', players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), games: games_str, player_count: N, logged_at_sgt: sgt, holes_played: inPlay.filter(Boolean).length }) }).catch(() => {}); } }).catch(() => {}); } }}
                 style={{
                   padding: v==="totals" ? "8px 18px" : "6px 10px",
                   borderRadius: 6,
