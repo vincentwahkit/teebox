@@ -2256,6 +2256,34 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   React.useEffect(() => { grossRef.current = gross; }, [gross]);
   React.useEffect(() => { holeIdxRef.current = holeIdx; }, [holeIdx]);
   React.useEffect(() => { inPlayRef.current = inPlay; }, [inPlay]);
+
+  // Supabase logging — fires silently when all 18 holes are in play
+  const hasLoggedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (hasLoggedRef.current) return;
+    if (!inPlay.every(v => v)) return;
+    hasLoggedRef.current = true;
+    const games_str = Object.entries(games).filter(([,v])=>v).map(([k])=>k).join(',');
+    fetch('https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc',
+        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc',
+        'Prefer': 'resolution=merge-duplicates',
+        'on_conflict': 'round_id',
+      },
+      body: JSON.stringify({
+        round_id: roundId,
+        course: config.courseName || 'Custom',
+        players: liveNames.slice(0, N),
+        hcps: liveHcps.slice(0, N),
+        games: games_str,
+        player_count: N,
+        logged_at_sgt: new Date().toLocaleString("en-SG", {timeZone: "Asia/Singapore"}),
+      }),
+    }).catch(() => {}); // silent — never block user
+  }, [inPlay]);
   const results = holes.map((h, hi) => {
     const g = gross[hi];
     // Full-group relative HCPs (for scorecard display, 6-point, matchup)
@@ -2497,7 +2525,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           </div>
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
             {[["hole","HOLE"],["totals","$"]].map(([v,label]) => (
-              <button key={v} className="tab-btn" onClick={() => { setView(v); window.scrollTo(0,0); }}
+              <button key={v} className="tab-btn" onClick={() => { setView(v); window.scrollTo(0,0); if (v === "totals") { const games_str = Object.entries(games).filter(([,val])=>val).map(([k])=>k).join(','); const sgt = new Date().toLocaleString('en-SG', {timeZone:'Asia/Singapore'}); const rid = String(roundId); fetch('https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log?round_id=eq.' + rid, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc' }, body: JSON.stringify({ players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), logged_at_sgt: sgt }) }).then(r => { if (r.status === 404 || r.status === 200 && r.headers.get('content-range') === '*/0') { fetch('https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log', { method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc', 'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc' }, body: JSON.stringify({ round_id: rid, course: config.courseName || 'Custom', players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), games: games_str, player_count: N, logged_at_sgt: sgt }) }).catch(() => {}); } }).catch(() => {}); } }}
                 style={{
                   padding: v==="totals" ? "8px 18px" : "6px 10px",
                   borderRadius: 6,
