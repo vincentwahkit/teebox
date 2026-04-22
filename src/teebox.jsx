@@ -87,10 +87,10 @@ const PALM_SPRINGS_PALM_ISLAND = [
 // Batam Hills Golf Resort, Indonesia — Blue tees, Par 72
 const BATAM_HILLS_HOLES = [
   {par:4,si:3},{par:3,si:11},{par:4,si:13},{par:3,si:17},
-  {par:5,si:1},{par:4,si:9},{par:4,si:5},{par:4,si:15},
-  {par:4,si:7},{par:4,si:12},{par:4,si:4},{par:5,si:14},
-  {par:4,si:10},{par:4,si:16},{par:4,si:2},{par:4,si:6},
-  {par:5,si:18},{par:4,si:8},
+  {par:5,si:1},{par:4,si:5},{par:5,si:9},{par:4,si:15},
+  {par:4,si:7},{par:4,si:14},{par:5,si:4},{par:3,si:12},
+  {par:4,si:10},{par:4,si:16},{par:4,si:2},{par:5,si:6},
+  {par:3,si:18},{par:4,si:8},
 ];
 
 // Seletar Country Club, Singapore — Blue tees, Par 72
@@ -123,8 +123,8 @@ const PONDEROSA_HOLES = [
 
 // Sukajadi Golf & Country Club, Batam, Indonesia — Par 72
 const SUKAJADI_HOLES = [
-  {par:4,si:14},{par:4,si:8},{par:5,si:2},{par:3,si:16},
-  {par:4,si:6},{par:4,si:4},{par:4,si:12},{par:5,si:10},
+  {par:4,si:14},{par:4,si:2},{par:5,si:6},{par:3,si:16},
+  {par:4,si:8},{par:4,si:4},{par:4,si:12},{par:5,si:10},
   {par:3,si:18},{par:3,si:15},{par:4,si:13},{par:4,si:5},
   {par:4,si:9},{par:3,si:17},{par:5,si:3},{par:4,si:11},
   {par:4,si:1},{par:5,si:7},
@@ -1314,6 +1314,13 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 {[1,2,3,4,5,6].map(n => (
                   <button key={n} onClick={() => {
                     setPlayerCount(n);
+                    setNames(prev => {
+                      const updated = [...prev];
+                      for (let i = 0; i < n; i++) {
+                      if (!updated[i] || !updated[i].trim()) updated[i] = `P${i+1}`;
+                      }
+                      return updated;
+                    });
                     try { localStorage.setItem("sws_playercount", String(n)); } catch(_) {}
                   }} style={{ width: 40, height: 40, borderRadius: 8, cursor: "pointer", fontSize: 16, fontWeight: "700",
                     border: `1px solid ${playerCount===n?"var(--accent)":"var(--border)"}`,
@@ -1543,6 +1550,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             })}
             {/* ── Advanced toggle ── */}
             {(() => {
+              const vcbActive = (canVegas && games.vegas) || (canCT && games.ct) || (canP3 && games.p3);
               const activeCount = [
                 !bankerNett,
                 hcpCap !== null,
@@ -1551,12 +1559,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 !hioRule,
               ].filter(Boolean).length;
               return (
-                <div onClick={() => setShowVegasAdvanced(v => !v)}
-                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showVegasAdvanced ? 10 : 14, cursor: "pointer", padding: "10px 14px", background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)" }}>
+                <div onClick={() => vcbActive && setShowVegasAdvanced(v => !v)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showVegasAdvanced ? 10 : 14, cursor: vcbActive ? "pointer" : "not-allowed", padding: "10px 14px", background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)", opacity: vcbActive ? 1 : 0.4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 16 }}>⚙</span>
                     <span style={{ fontSize: 15, fontWeight: "700", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Advanced</span>
-                    {activeCount > 0 && (
+                    {activeCount > 0 && vcbActive && (
                       <span style={{ fontSize: 11, fontWeight: "700", color: "#000", background: "var(--accent)", borderRadius: 10, padding: "1px 7px", fontFamily: "'DM Sans', sans-serif" }}>{activeCount}</span>
                     )}
                   </div>
@@ -2035,7 +2043,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             }
             setStartError("");
             onStart({
-              names: names.slice(0, playerCount).map((n,i) => n.trim()||`Player ${i+1}`),
+              names: names.slice(0, playerCount).map((n,i) => n.trim()||`P${i+1}`),
               hcps: hcps.slice(0, playerCount),
               playerCount,
               vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
@@ -2108,10 +2116,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   const saved = config._savedState;
   const savedScores = config._savedScores; // from mid-round back to setup
   const roundId = React.useRef(config._roundId || Date.now()).current;
-  const N = config.playerCount || names.length || 4;
+  const N = Math.min(config.playerCount || names.length || 4, names.length || 4);
   const players = Array.from({length: N}, (_, i) => i);
   const vegasPlayers = config.vegasPlayers || [0,1,2,3];
-  const vp = vegasPlayers;
+  const vp = (vegasPlayers || [0,1,2,3]).filter(i => i < N);
   const [gross, setGross] = useState(() => {
     const savedGross = savedScores?.gross || saved?.gross;
     if (savedGross) {
@@ -2665,7 +2673,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               {/* Nett scores */}
               <div style={{ display: "grid", gridTemplateColumns: `repeat(${N},1fr)`, gap: N>=5?4:6 }}>
                 {players.map(pi => {
-                  const n = vp.includes(pi) ? res.nVP[pi] : res.n[pi];
+                  const n = res.n[pi];
                   const nettDiff = n !== null ? n - h.par : null;
                   return (
                     <div key={pi} style={{ textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "4px 2px 6px", border: "1px solid var(--border)" }}>
@@ -3159,7 +3167,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${N}, 1fr)`, borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "8px 10px" }} />
                   {players.map(pi => (
-                    <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi].slice(0,5)}</div>
+                    <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{(liveNames[pi]||`P${pi+1}`).slice(0,5)}</div>
                   ))}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${N}, 1fr)`, borderBottom: "1px solid var(--border)" }}>
@@ -3174,7 +3182,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   {players.map(pi => {
                     const cum = ptsCum[pi];
                     const maxCum = Math.max(...players.map(p => ptsCum[p]));
-                    return <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, fontWeight: "700", color: cum===maxCum&&cum>0?(isLight?"#16a34a":COLORS[0]):"var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{cum}</div>;
+                    return <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 22, fontWeight: "700", color: cum===maxCum&&cum>0?(isLight?"#16a34a":COLORS[0]):"var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{cum}</div>;
                   })}
                 </div>
               </div>
