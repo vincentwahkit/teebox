@@ -293,6 +293,51 @@ function computePointsGame(nett) {
   });
 }
 
+// Sixes — compare top 1 or top 2 nett from each team
+// team1/team2: arrays of player indices
+// nett: full array of nett scores (one per player)
+// mode: "top1" (best only) or "top2" (best + 2nd)
+// Returns { t1pts, t2pts } — max 1 (top1) or 2 (top2) per hole. Ties award 0.
+function computeSixes(nett, team1, team2, mode) {
+  const t1scores = team1.map(i => nett[i]).filter(n => n !== null).sort((a,b) => a - b);
+  const t2scores = team2.map(i => nett[i]).filter(n => n !== null).sort((a,b) => a - b);
+  if (t1scores.length === 0 || t2scores.length === 0) return { t1pts: 0, t2pts: 0 };
+  let t1pts = 0, t2pts = 0;
+  // Best vs best
+  if (t1scores[0] < t2scores[0]) t1pts += 1;
+  else if (t2scores[0] < t1scores[0]) t2pts += 1;
+  // 2nd vs 2nd (top2 mode only, and only if both teams have a 2nd score)
+  if (mode === "top2" && t1scores.length >= 2 && t2scores.length >= 2) {
+    if (t1scores[1] < t2scores[1]) t1pts += 1;
+    else if (t2scores[1] < t1scores[1]) t2pts += 1;
+  }
+  return { t1pts, t2pts };
+}
+
+// Randomise sixes teams — 4/5-ball (round-robin among 4) or 6-ball (no pair in all 3 segs)
+function randomiseSixesTeams(N) {
+  if (N === 4) {
+    // True round-robin: 3 segments where every player partners every other exactly once
+    const players = [0,1,2,3].sort(() => Math.random() - 0.5);
+    const [a, b, c, d] = players;
+    return [[[a,b],[c,d]], [[a,c],[b,d]], [[a,d],[b,c]]];
+  }
+  if (N === 5) {
+    // 5-ball: shadow=P5 (highest HCP, set outside), 4 non-shadow players rotate 4-ball style
+    // Randomise the 4 non-shadow player slots
+    const players = [0,1,2,3].sort(() => Math.random() - 0.5);
+    const [a, b, c, d] = players;
+    return [[[a,b],[c,d]], [[a,c],[b,d]], [[a,d],[b,c]]];
+  }
+  if (N === 6) {
+    // 6-ball: 3 segments of 3v3 with no pair together in all 3 segments
+    const players = [0,1,2,3,4,5].sort(() => Math.random() - 0.5);
+    const [a, b, c, d, e, f] = players;
+    return [[[a,b,c],[d,e,f]], [[a,d,e],[b,c,f]], [[a,b,f],[c,d,e]]];
+  }
+  return null;
+}
+
 function computePar3(nett, banker, mults) {
   const N = nett.length;
   const d = Array(N).fill(0);
@@ -607,7 +652,7 @@ function haptic(style = "light") {
   } catch(_) {}
 }
 
-async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, ptsCum, vegasVal, ctVal, p3Val, ptsVal, adjustments, games, matchupEnabled, nassauResults, matchups, courseName, roundStartTime, qrPayload, playerCount, vegasPlayers, vTeams, banker, p3mult, hioRule }) {
+async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, ptsCum, vegasVal, ctVal, p3Val, ptsVal, adjustments, games, matchupEnabled, nassauResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName, roundStartTime, qrPayload, playerCount, vegasPlayers, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }) {
   const isSolo = playerCount === 1;
   const RP = names.map((_,i) => i);
   // Generate QR data URL if qrcode-generator library is loaded
@@ -679,8 +724,8 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     const h = holes[hi];
     const active = inPlay[hi];
     const rowStyle = active ? "" : "opacity:0.4;background:#f5f5f5;";
-    const team0 = (vTeams && vTeams[hi]) ? vTeams[hi][0] : [vp[0],vp[1]];
-    const team1 = (vTeams && vTeams[hi]) ? vTeams[hi][1] : [vp[2],vp[3]];
+    const team0 = hzEnabled ? [hzHero[hi]] : ((vTeams && vTeams[hi]) ? vTeams[hi][0] : [vp[0],vp[1]]);
+    const team1 = hzEnabled ? [0,1,2].filter(i => i !== hzHero[hi]) : ((vTeams && vTeams[hi]) ? vTeams[hi][1] : [vp[2],vp[3]]);
     const isHIO_rep = hioRule !== false && h.par === 3 && results[hi].g.some(g => parseInt(g,10) === 1);
     let row = `<tr style="${rowStyle}">
       <td style="text-align:center;font-weight:600;color:#555">${hi+1}</td>
@@ -707,11 +752,11 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       }
       // Vegas team dot — only for VP players: filled = team 0, outline = team 1
       let vegasDot = "";
-      if (games.vegas && RN >= 4 && inVP && !isHIO_rep) {
+      if (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled) && inVP && !isHIO_rep) {
         if (inTeam0) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#333;vertical-align:middle"></span>`;
         else if (inTeam1) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1.5px solid #333;vertical-align:middle"></span>`;
       }
-      const hasSuffix = (games.vegas && RN >= 4) || (games.p3 && h.par === 3);
+      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || (games.p3 && h.par === 3);
       const suffix = hasSuffix
         ? `<span style="display:inline-block;width:16px;text-align:left;vertical-align:middle;margin-left:1px">
             <span style="display:block;text-align:left;height:10px;line-height:10px">${bankerTag}</span>
@@ -724,7 +769,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     scRows += row;
     if (hi < 9) outPar += h.par; else inPar += h.par;
     if (hi === 8) {
-      const hasSuffix = (games.vegas && RN >= 4) || games.p3;
+      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3;
       scRows += `<tr style="background:#e8f5e8;font-weight:700">
         <td style="text-align:center">OUT</td>
         <td style="text-align:center">${outPar}</td>
@@ -733,7 +778,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       </tr>`;
     }
   }
-  const hasSuffix = (games.vegas && RN >= 4) || games.p3;
+  const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3;
   scRows += `<tr style="background:#e8f5e8;font-weight:700">
     <td style="text-align:center">IN</td>
     <td style="text-align:center">${inPar}</td>
@@ -818,21 +863,29 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     <div class="header-right" style="color:#e8f5e8">
       <div>${dateStr}</div>
       <div>${timeOfDay} · ${courseName || "Custom Course"}</div>
-      <div style="margin-top:2px;color:#4a7a4a">vw-1.1.1</div>
+      <div style="margin-top:2px;color:#4a7a4a">vw-1.1.2</div>
     </div>
   </div>
   ${!isSolo ? `<div>
     <h2>$$$ Summary</h2>
     <table>
       <tr><th style="text-align:left"></th>${names.map(n=>`<th>${n.slice(0,8)}</th>`).join("")}</tr>
-      ${games.pts?`<tr style="background:#f8f8f8"><td class="label" style="color:#333;font-size:11px">Pts HCP</td>${relHcps.map(h=>`<td style="font-size:12px;color:#333;text-align:center">${h}</td>`).join("")}</tr>`:""}
-      ${(games.vegas||games.ct||games.p3) ? `<tr style="background:#f8f8f8"><td class="label" style="color:#333;font-size:11px">HCP/Next</td>${names.map((_,i)=>`<td style="font-size:11px;color:#333;text-align:center">${relHcps[i]} / <b>${nextRelHcps[i]}</b></td>`).join("")}</tr>` : ""}
-      ${games.vegas ? `<tr><td class="label">Vegas</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}      ${(games.vegas||games.ct||games.p3)?`<tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.pts||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
-      ${games.pts && ptsCum ? `<tr><td class="label">${ptsVal===0?"Pts (pt)":`Pts ($${ptsVal})`}</td>${RP.map(i=>{const v=ptsVal>0?RP.reduce((s,j)=>j!==i?s+(ptsCum[i]-ptsCum[j])*ptsVal:s,0):ptsCum[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${v||"—"}</td>`;}).join("")}</tr>`:""}       ${matchupEnabled ? `<tr><td class="label">Match</td>${(()=>{const nd=Array(RP.length).fill(0);(nassauResults||[]).forEach((r,mi)=>{const m=matchups[mi];nd[m.p1]+=r.dollars.net;nd[m.p2]-=r.dollars.net;});return nd.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("");})()}</tr>`:""}       ${(matchupEnabled||(games.pts&&ptsVal>0)) ? `<tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>` : ""}
+      ${(games.pts||games.vegas||games.ct||games.p3) ? (()=>{
+        // Show HCP/Next if Vegas/CT/Banker is active (next HCP only meaningful for betting games)
+        // Show HCP alone if only Points Game is active
+        const showNext = games.vegas || games.ct || games.p3;
+        const label = showNext ? "HCP/Next" : "HCP";
+        return `<tr style="background:#f8f8f8"><td class="label" style="color:#333;font-size:11px">${label}</td>${names.map((_,i)=>`<td style="font-size:${showNext?11:12}px;color:#333;text-align:center">${relHcps[i]}${showNext?` / <b>${nextRelHcps[i]}</b>`:""}</td>`).join("")}</tr>`;
+      })() : ""}
+      ${games.vegas ? `<tr><td class="label">Vegas${hzEnabled?" (Hero or Zero)":ghostEnabled?" (Ghost)":""}</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}      ${(games.vegas||games.ct||games.p3)?`<tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.pts||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
+      ${games.pts && ptsCum ? `<tr><td class="label">${ptsVal===0?"Pts (pt)":`Pts ($${ptsVal})`}</td>${RP.map(i=>{const v=ptsVal>0?RP.reduce((s,j)=>j!==i?s+(ptsCum[i]-ptsCum[j])*ptsVal:s,0):ptsCum[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${v||"—"}</td>`;}).join("")}</tr>`:""}
+      ${sixesEnabled ? `<tr><td class="label">${sixesConfig.stakeType==="cash"?`Sixes ($${sixesConfig.cashAmount})`:(()=>{const tot=sixesPlayerTokens.reduce((s,v)=>s+v,0);return`Sixes (${tot} token${tot===1?"":"s"})`;})()}</td>${RP.map(i=>{if(sixesConfig.stakeType==="cash"){const v=sixesPlayerDollars[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}else{const v=sixesPlayerTokens[i];return`<td>${v||"—"}</td>`;}}).join("")}</tr>`:""}
+      ${matchupEnabled ? `<tr><td class="label">Match</td>${(()=>{const nd=Array(RP.length).fill(0);(nassauResults||[]).forEach((r,mi)=>{const m=matchups[mi];nd[m.p1]+=r.dollars.net;nd[m.p2]-=r.dollars.net;});return nd.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("");})()}</tr>`:""}
+      ${(matchupEnabled||(games.pts&&ptsVal>0)||(sixesEnabled&&sixesConfig.stakeType==="cash")) ? `<tr class="total-row"><td style="text-align:left;color:#4ade80">TOTAL</td>${dollars.map(v=>`<td style="color:${v>0?"#4ade80":v<0?"#f87171":"#aaa"};font-weight:700">${v>0?"+":v<0?"":"-"}${Math.abs(v)||"—"}</td>`).join("")}</tr>` : ""}
     </table>
   </div>` : ""}
   <h2>Scorecard (Gross)</h2>
-  ${games.vegas && RN >= 4 ? `<div style="font-size:9px;color:#555;margin-bottom:2px">
+  ${games.vegas && (RN >= 4 || ghostEnabled || hzEnabled) ? `<div style="font-size:9px;color:#555;margin-bottom:2px">
     <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#333;vertical-align:middle;margin-right:3px"></span>= Team A &nbsp;
     <span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1.5px solid #333;vertical-align:middle;margin-right:3px"></span>= Team B
   </div>` : ""}
@@ -843,12 +896,12 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   <table class="scorecard">
     <tr>
       <th>H</th><th>Par</th><th>SI</th>
-      ${(function(){ const hasSuffix2 = (games.vegas && RN >= 4) || games.p3; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,8)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
+      ${(function(){ const hasSuffix2 = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,8)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
     </tr>
     ${scRows}
   </table>
   <div class="footer">
-    Generated by Tee Box vw-1.1.1 · ${new Date().toLocaleString("en-SG")}
+    Generated by Tee Box vw-1.1.2 · ${new Date().toLocaleString("en-SG")}
   </div>
   <div style="text-align:center;margin:10px 0;page-break-inside:avoid">
     <h2 style="font-size:9px;color:#4a7a4a;letter-spacing:2px;text-transform:uppercase;margin:8px 0 6px;border-bottom:1px solid #ddd;padding-bottom:2px">QR Code — Full Round Data</h2>
@@ -1005,6 +1058,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [hioRule, setHioRule] = useState(sc?.hioRule ?? true);
   const [ptsVal, setPtsVal] = useState(sc?.ptsVal !== undefined ? sc.ptsVal : 0);
   const [hcpThreshold, setHcpThreshold] = useState(sc?.hcpThreshold ?? 25);
+  // 3-ball Vegas variant: "hz" (Hero or Zero — default) or "ghost" (virtual 4th player)
+  const [threeBallVariant, setThreeBallVariant] = useState(sc?.threeBallVariant ?? "hz");
+  // Hero or Zero: bonus on/off for whole round
+  const [hzBonus, setHzBonus] = useState(sc?.hzBonus ?? false);
   const [courses, setCourses] = useState([]);
   const [showLib, setShowLib] = useState(false);
   const [saveName, setSaveName] = useState("");
@@ -1026,7 +1083,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
     } catch(_) {}
     return PRESET_COURSES[0];
   });
-  const [games, setGames] = useState(sc?.games || { vegas: true, ct: true, p3: true, pts: false });
+  const [games, setGames] = useState(sc?.games || { vegas: true, ct: true, p3: true, pts: false, sixes: false });
   const [vegasPlayers, setVegasPlayers] = useState(() => sc?.vegasPlayers || [0,1,2,3]);
   // When playerCount drops below current vegasPlayers indices, reset to first 4
   React.useEffect(() => {
@@ -1040,18 +1097,59 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   // Auto-adjust game defaults when player count changes — only if not restoring from config
   React.useEffect(() => {
     if (sc) return; // don't override restored games
-    if (playerCount === 3) setGames(g => ({ ...g, vegas: false, ct: false, p3: false, pts: true }));
-    if (playerCount === 4) setGames(g => ({ ...g, vegas: true, ct: true, p3: true, pts: false }));
-    if (playerCount >= 5) setGames(g => ({ ...g, vegas: true, ct: true, p3: true, pts: false }));
-    if (playerCount <= 2) setGames(g => ({ ...g, vegas: false, pts: false }));
+    if (playerCount === 1) setGames(g => ({ ...g, vegas: false, ct: false, p3: false, pts: false, sixes: false }));
+    if (playerCount === 2) setGames(g => ({ ...g, vegas: false, ct: false, p3: false, pts: false, sixes: false }));
+    if (playerCount === 3) setGames(g => ({ ...g, vegas: false, ct: false, p3: false, pts: true, sixes: false }));
+    if (playerCount === 4) setGames(g => ({ ...g, vegas: true, ct: true, p3: true, pts: false, sixes: false }));
+    if (playerCount === 5) setGames(g => ({ ...g, vegas: false, ct: false, p3: false, pts: false, sixes: true }));
+    if (playerCount === 6) setGames(g => ({ ...g, vegas: false, ct: false, p3: false, pts: false, sixes: true }));
+    // Matchup default: on for 2+ players
+    if (playerCount === 2) setMatchupBets(n => ({ ...n, on: true }));
+    // Reset default sixes teams for new player count
+    if (playerCount === 4) setSixesConfig(s => ({ ...s, segments: [[[0,1],[2,3]], [[0,2],[1,3]], [[0,3],[1,2]]] }));
+    if (playerCount === 6) setSixesConfig(s => ({ ...s, segments: [[[0,1,2],[3,4,5]], [[0,3,4],[1,2,5]], [[0,1,5],[2,3,4]]] }));
   }, [playerCount]);
   // Game availability based on player count
-  const canVegas = playerCount >= 4;
+  const canVegas = playerCount >= 3; // 3-ball = Ghost mode
   const canCT    = playerCount >= 2;
   const canP3    = playerCount >= 2;
   const canMatchup = playerCount >= 2;
   const canPts   = playerCount >= 3;
+  const canSixes = playerCount === 4 || playerCount === 5 || playerCount === 6;
   const [matchupBets, setMatchupBets] = useState(sc?.nassau || { on: false, matchups: DEFAULT_MATCHUP.map(m => ({ ...m })) });
+  const [sixesConfig, setSixesConfig] = useState(() => {
+    const defaults = {
+      mode: "top2",
+      stakeType: "meal",
+      cashAmount: 10,
+      segments: [[[0,1],[2,3]], [[0,2],[1,3]], [[0,3],[1,2]]],
+      shadowPlayer: null,
+      shadowOf: [null, null, null],
+    };
+    return sc?.sixesConfig ? { ...defaults, ...sc.sixesConfig } : defaults;
+  });
+  // Ensure sixes segments match current player count (handles 4→5→6 mismatch)
+  React.useEffect(() => {
+    if (playerCount !== 4 && playerCount !== 5 && playerCount !== 6) return;
+    const currentFirstTeam = sixesConfig.segments?.[0]?.[0];
+    const expectedTeamSize = playerCount === 6 ? 3 : 2;
+    const teamSizeWrong = !currentFirstTeam || currentFirstTeam.length !== expectedTeamSize;
+    const shadowMissing = playerCount === 5 && (sixesConfig.shadowPlayer === null || sixesConfig.shadowPlayer === undefined);
+    if (teamSizeWrong || shadowMissing) {
+      if (playerCount === 4) {
+        setSixesConfig(s => ({ ...s, segments: [[[0,1],[2,3]], [[0,2],[1,3]], [[0,3],[1,2]]], shadowPlayer: null, shadowOf: [null,null,null] }));
+      } else if (playerCount === 5) {
+        // 5-ball: shadow = weakest player (highest HCP), shadows next-weakest
+        const indexed = [0,1,2,3,4].map(i => ({ i, hcp: hcps[i] || 0 }));
+        indexed.sort((a, b) => b.hcp - a.hcp); // highest HCP first
+        const shadowIdx = indexed[0].i;
+        const nextWeakestIdx = indexed[1].i;
+        setSixesConfig(s => ({ ...s, segments: teamSizeWrong ? [[[0,1],[2,3]], [[0,2],[1,3]], [[0,3],[1,2]]] : s.segments, shadowPlayer: shadowIdx, shadowOf: [nextWeakestIdx, nextWeakestIdx, nextWeakestIdx] }));
+      } else {
+        setSixesConfig(s => ({ ...s, segments: [[[0,1,2],[3,4,5]], [[0,3,4],[1,2,5]], [[0,1,5],[2,3,4]]], shadowPlayer: null, shadowOf: [null,null,null] }));
+      }
+    }
+  }, [playerCount, sixesConfig.segments, sixesConfig.shadowPlayer, hcps]);
   const [importPreview, setImportPreview] = useState(null);
   const [activeSection, setActiveSection] = useState(null);
   const [startError, setStartError] = useState("");
@@ -1275,7 +1373,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
         {/* Header */}
         <div style={{ position: "relative", textAlign: "center", padding: "24px 20px 16px", background: isLight ? "linear-gradient(180deg, #e8f5e8 0%, #f8faf8 100%)" : "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
           <div style={{ position: "absolute", top: 8, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-            <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.1.1</span>
+            <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.1.2</span>
             <div onClick={toggleTheme} title={isLight ? "Switch to Night Mode" : "Switch to Outdoor Mode"}
               style={{ width: 36, height: 20, borderRadius: 10, background: isLight ? COLORS[0] : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
               <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isLight ? 18 : 2, transition: "left 0.2s" }}>
@@ -1354,7 +1452,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   }} style={{ width: 28, height: 24, background: i===playerCount-1?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 4, color: i===playerCount-1?"#2a4a2a":COLORS[0], cursor: i===playerCount-1?"default":"pointer", fontSize: 13 }}>↓</button>
                 </div>
                 <div style={{ ...S.dot, background: isLight ? COLORS_LIGHT[i] : COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, flexShrink: 0 }}>{i+1}</div>
-                <input value={names[i]} placeholder={`Player ${i+1}`}
+                <input value={names[i]||`P${i+1}`} placeholder={`Player ${i+1}`}
                   style={{ ...S.inp, flex: 1, minWidth: 0, fontSize: 16, padding: "11px 10px" }}
                   onChange={e => { const n=[...names]; n[i]=e.target.value; setNames(n); try { localStorage.setItem("sws_names", JSON.stringify(n)); } catch(_){} }} />
                 <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
@@ -1537,7 +1635,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   {/* Label */}
                   <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                     {label}
-                    {!available && <span style={{ fontSize: 10, color: "var(--dim)", marginLeft: 6 }}>{key==="vegas"?"4 players":"2+ players"}</span>}
+                    {key === "vegas" && playerCount === 3 && on && <span style={{ fontSize: 10, color: "var(--accent)", marginLeft: 6, fontWeight: "700" }}>{threeBallVariant === "ghost" ? "👻 Ghost" : "🦸 Hero or Zero"}</span>}
+                    {!available && <span style={{ fontSize: 10, color: "var(--dim)", marginLeft: 6 }}>{key==="vegas"?"3+ players":"2+ players"}</span>}
                   </span>
                   {/* Stake stepper */}
                   <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", opacity: on&&available?1:0.4, pointerEvents: on&&available?"auto":"none" }}>
@@ -1548,6 +1647,45 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 </div>
               );
             })}
+            {/* ── 3-ball Vegas variant config ── */}
+            {playerCount === 3 && games.vegas && (
+              <div style={{ marginBottom: 14, padding: 10, background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)" }}>
+                <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>3-BALL VEGAS VARIANT</div>
+                {/* Variant selector */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                  {[["hz", "🦸 Hero or Zero"], ["ghost", "👻 Ghost"]].map(([val, lbl]) => (
+                    <button key={val} onClick={() => setThreeBallVariant(val)}
+                      style={{ flex: 1, padding: "10px 8px", borderRadius: 8, fontSize: 13, fontWeight: "600", cursor: "pointer",
+                        border: `1px solid ${threeBallVariant === val ? "var(--accent)" : "var(--border)"}`,
+                        background: threeBallVariant === val ? (isLight?"#000":"var(--accent)") : "transparent",
+                        color: threeBallVariant === val ? "#fff" : "var(--text)",
+                        fontFamily: "'DM Sans', sans-serif" }}>{lbl}</button>
+                  ))}
+                </div>
+                {/* Bonus toggle — HZ only */}
+                {threeBallVariant === "hz" && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <button onClick={() => setHzBonus(b => !b)}
+                      style={{ width: 36, height: 22, borderRadius: 11, flexShrink: 0, cursor: "pointer",
+                        border: `1px solid ${hzBonus ? "var(--accent)" : "var(--border)"}`,
+                        background: hzBonus ? "var(--accent)" : "transparent",
+                        position: "relative", padding: 0 }}>
+                      <div style={{ width: 14, height: 14, borderRadius: "50%", background: hzBonus ? "#fff" : "var(--text)",
+                        position: "absolute", top: 3, left: hzBonus ? 19 : 3, transition: "left 0.15s" }} />
+                    </button>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Bonus play</div>
+                      <div style={{ fontSize: 10, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{hzBonus ? "Bonus & multiplier triggers apply" : "Multipliers apply, no bonus"}</div>
+                    </div>
+                  </div>
+                )}
+                <div style={{ fontSize: 10, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", lineHeight: 1.4 }}>
+                  {threeBallVariant === "hz"
+                    ? "Pick a Hero per hole — their score pairs with itself. Hero wins 2× or loses 2×."
+                    : "Virtual 4th player (Ghost) plays bogey each hole. Ghost can be overridden per hole."}
+                </div>
+              </div>
+            )}
             {/* ── Advanced toggle ── */}
             {(() => {
               const vcbActive = (canVegas && games.vegas) || (canCT && games.ct) || (canP3 && games.p3);
@@ -1756,6 +1894,183 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                     <button className="pm-btn" onClick={() => setPtsVal(v => v+1)} style={S.pmBtnInline}>+</button>
                   </div>
                 </div>
+              );
+            })()}
+            {/* Sixes game — 4-ball or 6-ball */}
+            {(() => {
+              const available = canSixes;
+              const on = games.sixes;
+              const N = playerCount;
+              return (
+                <>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, opacity: available?1:0.35 }}>
+                  <button onClick={() => { if (!available) return; setGames(g => ({ ...g, sixes: !g.sixes })); }}
+                    style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, cursor: available?"pointer":"not-allowed",
+                      border: `1px solid ${on&&available?"var(--accent)":"var(--border)"}`,
+                      background: on&&available ? (isLight?"#000":"var(--accent)") : "transparent",
+                      color: on&&available?"#fff":"var(--text)", fontSize: 16, fontWeight: "700" }}>
+                    {on&&available?"✓":"—"}
+                  </button>
+                  <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
+                    Sixes
+                    {!available && <span style={{ fontSize: 10, color: "var(--dim)", marginLeft: 6 }}>4-6 players</span>}
+                  </span>
+                </div>
+
+                {/* Sixes config */}
+                {on && available && (
+                  <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+                    {/* Mode toggle */}
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>MODE</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {[["top1", "Best Ball"], ["top2", "Best 2"]].map(([val, label]) => (
+                          <button key={val} onClick={() => setSixesConfig(s => ({ ...s, mode: val }))}
+                            style={{ flex: 1, padding: "8px 10px", borderRadius: 8, fontSize: 13, fontWeight: "600", cursor: "pointer",
+                              border: `1px solid ${sixesConfig.mode === val ? "var(--accent)" : "var(--border)"}`,
+                              background: sixesConfig.mode === val ? (isLight?"#000":"var(--accent)") : "transparent",
+                              color: sixesConfig.mode === val ? "#fff" : "var(--text)",
+                              fontFamily: "'DM Sans', sans-serif" }}>{label}</button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text)", marginTop: 6, fontFamily: "'DM Sans', sans-serif" }}>
+                        {sixesConfig.mode === "top1" ? "1 pt/hole — best score from each team" : "2 pts/hole — best + 2nd best from each team"}
+                      </div>
+                    </div>
+
+                    {/* Stake type */}
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>STAKE</div>
+                      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                        {[["meal", "Meal (tokens)"], ["cash", "Cash"]].map(([val, label]) => (
+                          <button key={val} onClick={() => setSixesConfig(s => ({ ...s, stakeType: val }))}
+                            style={{ flex: 1, padding: "8px 10px", borderRadius: 8, fontSize: 13, fontWeight: "600", cursor: "pointer",
+                              border: `1px solid ${sixesConfig.stakeType === val ? "var(--accent)" : "var(--border)"}`,
+                              background: sixesConfig.stakeType === val ? (isLight?"#000":"var(--accent)") : "transparent",
+                              color: sixesConfig.stakeType === val ? "#fff" : "var(--text)",
+                              fontFamily: "'DM Sans', sans-serif" }}>{label}</button>
+                        ))}
+                      </div>
+                      {sixesConfig.stakeType === "cash" && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>$ per segment winner:</span>
+                          <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+                            <button onClick={() => setSixesConfig(s => ({ ...s, cashAmount: Math.max(0, s.cashAmount - 5) }))} style={S.pmBtnInline}>−</button>
+                            <span style={{ width: 50, textAlign: "center", color: "var(--accent)", fontSize: 14, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>${sixesConfig.cashAmount}</span>
+                            <button onClick={() => setSixesConfig(s => ({ ...s, cashAmount: s.cashAmount + 5 }))} style={S.pmBtnInline}>+</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Shadow player (5-ball only) */}
+                    {N === 5 && (() => {
+                      const shadow = sixesConfig.shadowPlayer;
+                      const nonShadowPlayers = [0,1,2,3,4].filter(i => i !== shadow);
+                      return (
+                        <div style={{ marginBottom: 12, padding: 10, background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                          <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>SHADOW PLAYER</div>
+                          <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
+                            Shadow contributes best of their score + shadowed player's score to their team.
+                          </div>
+                          {/* Shadow player selector */}
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Shadow:</span>
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                              {[0,1,2,3,4].map(pi => (
+                                <button key={pi} onClick={() => {
+                                  // Set shadow; default partner to next-weakest HCP (excluding the shadow)
+                                  const nonShadowSorted = [0,1,2,3,4].filter(i => i !== pi)
+                                    .map(i => ({ i, hcp: hcps[i] || 0 }))
+                                    .sort((a, b) => b.hcp - a.hcp);
+                                  const defaultOf = nonShadowSorted[0].i;
+                                  setSixesConfig(s => ({ ...s, shadowPlayer: pi, shadowOf: [defaultOf, defaultOf, defaultOf] }));
+                                }}
+                                  style={{ padding: "5px 10px", borderRadius: 6, fontSize: 12, fontWeight: "600", cursor: "pointer",
+                                    border: `1px solid ${shadow === pi ? "var(--accent)" : "var(--border)"}`,
+                                    background: shadow === pi ? (isLight?"#000":"var(--accent)") : "transparent",
+                                    color: shadow === pi ? "#fff" : "var(--text)",
+                                    fontFamily: "'DM Sans', sans-serif" }}>
+                                  {(names[pi]||`P${pi+1}`).slice(0,5)}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          {/* Shadows whom per segment */}
+                          {shadow !== null && (
+                            <div>
+                              <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>Shadows whom per segment:</div>
+                              {["1st", "2nd", "3rd"].map((segLabel, si) => (
+                                <div key={si} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                                  <span style={{ fontSize: 12, color: "var(--text)", fontWeight: "600", width: 30, fontFamily: "'DM Sans', sans-serif" }}>{segLabel}:</span>
+                                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                                    {nonShadowPlayers.map(pi => (
+                                      <button key={pi} onClick={() => {
+                                        const newOf = [...sixesConfig.shadowOf];
+                                        newOf[si] = pi;
+                                        setSixesConfig(s => ({ ...s, shadowOf: newOf }));
+                                      }}
+                                        style={{ padding: "4px 8px", borderRadius: 5, fontSize: 11, fontWeight: "600", cursor: "pointer",
+                                          border: `1px solid ${sixesConfig.shadowOf?.[si] === pi ? "var(--accent)" : "var(--border)"}`,
+                                          background: sixesConfig.shadowOf?.[si] === pi ? (isLight?"#000":"var(--accent)") : "transparent",
+                                          color: sixesConfig.shadowOf?.[si] === pi ? "#fff" : "var(--text)",
+                                          fontFamily: "'DM Sans', sans-serif" }}>
+                                        {(names[pi]||`P${pi+1}`).slice(0,5)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Segment pairings */}
+                    <div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>SEGMENTS</div>
+                        <button onClick={() => {
+                          const newTeams = randomiseSixesTeams(N);
+                          if (newTeams) setSixesConfig(s => ({ ...s, segments: newTeams }));
+                        }}
+                          style={{ fontSize: 12, fontWeight: "600", padding: "4px 10px", borderRadius: 6, cursor: "pointer",
+                            border: "1px solid var(--border)", background: "transparent", color: "var(--text)",
+                            fontFamily: "'DM Sans', sans-serif" }}>
+                          🎲 Randomise
+                        </button>
+                      </div>
+                      {sixesConfig.segments.map((seg, si) => (
+                        <div key={si} style={{ background: "var(--input)", border: "1px solid var(--border)", borderRadius: 8, padding: 8, marginBottom: 6 }}>
+                          <div style={{ fontSize: 11, color: "var(--text)", fontWeight: "700", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>{["1st", "2nd", "3rd"][si]}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontFamily: "'DM Sans', sans-serif" }}>
+                            <div style={{ flex: 1, color: "var(--text)" }}>
+                              {seg[0].map(pi => {
+                                const isShadowed = N === 5 && sixesConfig.shadowOf?.[si] === pi;
+                                return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginRight: 4 }}>
+                                  {names[pi]?.slice(0,5) || `P${pi+1}`}
+                                  {isShadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2 }}>+{(names[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                                </span>;
+                              })}
+                            </div>
+                            <span style={{ color: "var(--dim)", fontSize: 11 }}>vs</span>
+                            <div style={{ flex: 1, color: "var(--text)", textAlign: "right" }}>
+                              {seg[1].map(pi => {
+                                const isShadowed = N === 5 && sixesConfig.shadowOf?.[si] === pi;
+                                return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginLeft: 4 }}>
+                                  {names[pi]?.slice(0,5) || `P${pi+1}`}
+                                  {isShadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2 }}>+{(names[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                                </span>;
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                </>
               );
             })()}
             {/* ── MATCHUPS ── */}
@@ -2048,13 +2363,16 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               playerCount,
               vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
               holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
+              threeBallVariant, hzBonus,
               games: {
                 vegas: canVegas && games.vegas,
                 ct: canCT && games.ct,
                 p3: canP3 && games.p3,
                 pts: canPts && games.pts,
+                sixes: canSixes && games.sixes,
               },
               nassau: matchupBets,
+              sixesConfig,
               ptsVal,
               courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
               _savedScores: savedScores || null,
@@ -2118,8 +2436,29 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   const roundId = React.useRef(config._roundId || Date.now()).current;
   const N = Math.min(config.playerCount || names.length || 4, names.length || 4);
   const players = Array.from({length: N}, (_, i) => i);
+  // 3-ball Vegas variants: Hero or Zero (default) or Ghost
+  const threeBallVariant = config.threeBallVariant || "hz";
+  const hzBonus = config.hzBonus || false;
+  const hzEnabled = N === 3 && config.games?.vegas && threeBallVariant === "hz";
+  const ghostEnabled = N === 3 && config.games?.vegas && threeBallVariant === "ghost";
+  const GHOST_IDX = 3; // index of virtual 4th player
+  const [ghostGross, setGhostGross] = useState(() => {
+    const savedGhost = savedScores?.ghostGross || config._savedState?.ghostGross;
+    if (savedGhost) return savedGhost;
+    return Array.from({length: 18}, (_, hi) => String(holes[hi].par + 1)); // default to bogey
+  });
+  const ghostGrossRef = React.useRef(ghostGross);
+  React.useEffect(() => { ghostGrossRef.current = ghostGross; }, [ghostGross]);
+  // HZ: per-hole Hero index (0, 1, or 2). Default P1 (idx 0).
+  const [hzHero, setHzHero] = useState(() => {
+    const savedHZ = savedScores?.hzHero || config._savedState?.hzHero;
+    if (savedHZ) return savedHZ;
+    return Array(18).fill(0);
+  });
+  const hzHeroRef = React.useRef(hzHero);
+  React.useEffect(() => { hzHeroRef.current = hzHero; }, [hzHero]);
   const vegasPlayers = config.vegasPlayers || [0,1,2,3];
-  const vp = (vegasPlayers || [0,1,2,3]).filter(i => i < N);
+  const vp = ghostEnabled ? [0,1,2,3] : (vegasPlayers || [0,1,2,3]).filter(i => i < N);
   const [gross, setGross] = useState(() => {
     const savedGross = savedScores?.gross || saved?.gross;
     if (savedGross) {
@@ -2159,6 +2498,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   const [roundStartTime, setRoundStartTime] = useState(() => saved?.roundStartTime || null);
   const [liveHcps, setLiveHcps] = useState(() => saved?.liveHcps ? [...saved.liveHcps] : [...hcps]);
   const [liveNames, setLiveNames] = useState(() => saved?.liveNames ? [...saved.liveNames] : [...names]);
+  // Helper: get name for a player index (handles Ghost)
+  const getName = (pi) => pi === GHOST_IDX && ghostEnabled ? "Ghost" : (liveNames[pi] || `P${pi+1}`);
+  const getColor = (pi) => pi === GHOST_IDX && ghostEnabled ? (isLight ? "#666" : "#888") : (isLight ? COLORS_LIGHT[pi] : COLORS[pi]);
   const [view, setView] = useState("hole");
   const [confirmBack, setConfirmBack] = useState(false);
   const [adjustments, setAdjustments] = useState(() => {
@@ -2225,8 +2567,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
 
   // Auto-save whenever gross or inPlay changes
   const isFirstRender = React.useRef(true);
-  React.useEffect(() => {
-    if (isFirstRender.current) { isFirstRender.current = false; return; }
+  const saveNow = React.useCallback(() => {
     onSave({
       roundId,
       config: { ...config, _roundId: roundId, _savedState: {
@@ -2239,11 +2580,32 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         liveHcps: liveHcpsRef.current,
         adjustments: adjustmentsRef.current,
         matchups: matchupsRef.current,
+        ghostGross: ghostGrossRef.current,
+        hzHero: hzHeroRef.current,
       }},
       date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
       courseName: config.courseName || "Round",
     });
-  }, [gross, inPlay]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [gross, inPlay, config, onSave, roundId]);
+  React.useEffect(() => {
+    if (isFirstRender.current) { isFirstRender.current = false; return; }
+    saveNow();
+  }, [gross, inPlay, ghostGross, hzHero]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Save on app background / tab hide / unload — prevents data loss if iOS kills the PWA
+  React.useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") saveNow();
+    };
+    const onPageHide = () => saveNow();
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onPageHide);
+    };
+  }, [saveNow]);
   function setVTeam(hi, side, players) {
     setVTeams(prev => { const n=prev.map(r=>[r[0].slice(),r[1].slice()]); n[hi][side]=players; return n; });
   }
@@ -2287,28 +2649,99 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     const minHcpAll = Math.min(...liveHcps);
     const n = players.map(pi => nettScore(g[pi], liveHcps[pi] - minHcpAll, h.si, h.par));
     // VP-only relative HCPs (for Vegas/CT/Banker — min within betting group only)
-    const minHcpVP = Math.min(...vp.map(pi => liveHcps[pi]));
-    const nVP = players.map(pi => {
-      if (!vp.includes(pi)) return n[pi];
-      let relHcp = liveHcps[pi] - minHcpVP;
-      if (hcpCap !== null) relHcp = Math.min(relHcp, hcpCap);
-      return nettScore(g[pi], relHcp, h.si, h.par);
-    });
-    // HIO detection — any player scores 1 on a par 3
+    // Ghost mode: extend to 4 players with ghost at index 3 (HCP 0, gross = ghostGross)
+    const vpHcps = ghostEnabled
+      ? [liveHcps[0], liveHcps[1], liveHcps[2], 0]
+      : vp.map(pi => liveHcps[pi]);
+    const minHcpVP = Math.min(...vpHcps);
+    const nVP = ghostEnabled
+      ? [0,1,2,3].map(pi => {
+          if (pi === GHOST_IDX) {
+            // Ghost plays its gross value directly (HCP 0)
+            const gg = parseInt(ghostGross[hi], 10);
+            if (isNaN(gg) || gg <= 0) return null;
+            const cap = h.par === 3 ? h.par + 3 : h.par + 4;
+            return Math.min(gg, cap);
+          }
+          let relHcp = liveHcps[pi] - minHcpVP;
+          if (hcpCap !== null) relHcp = Math.min(relHcp, hcpCap);
+          return nettScore(g[pi], relHcp, h.si, h.par);
+        })
+      : players.map(pi => {
+          if (!vp.includes(pi)) return n[pi];
+          let relHcp = liveHcps[pi] - minHcpVP;
+          if (hcpCap !== null) relHcp = Math.min(relHcp, hcpCap);
+          return nettScore(g[pi], relHcp, h.si, h.par);
+        });
+    // HIO detection — any player scores 1 on a par 3 (ghost doesn't trigger HIO)
     const isHIO = hioRule && h.par === 3 && players.some(pi => parseInt(g[pi], 10) === 1);
-    const vr = (games.vegas && N >= 4 && !isHIO) ? computeVegas(vTeams[hi], g, nVP, h.par, vegasRules) : null;
+    // Vegas: allowed in 3-ball with Ghost (ghostEnabled) OR HZ (hzEnabled) OR 4+ players
+    let grossForVegas, nettForVegas, teamsForVegas;
+    if (hzEnabled) {
+      // HZ: Hero self-pairs. Virtual index 3 = copy of Hero.
+      const hero = hzHero[hi];
+      const other = [0,1,2].filter(i => i !== hero);
+      grossForVegas = [g[0], g[1], g[2], g[hero]];
+      nettForVegas = [nVP[0], nVP[1], nVP[2], nVP[hero]];
+      teamsForVegas = [[hero, 3], other];
+    } else if (ghostEnabled) {
+      grossForVegas = [g[0], g[1], g[2], ghostGross[hi]];
+      nettForVegas = nVP;
+      teamsForVegas = vTeams[hi];
+    } else {
+      grossForVegas = g;
+      nettForVegas = nVP;
+      teamsForVegas = vTeams[hi];
+    }
+    let vr = (games.vegas && (N >= 4 || ghostEnabled || hzEnabled) && !isHIO) ? computeVegas(teamsForVegas, grossForVegas, nettForVegas, h.par, vegasRules) : null;
+    // HZ: if bonus toggle is OFF, zero out bonuses from result
+    if (vr && hzEnabled && !hzBonus) {
+      const adjNetA = vr.netA - (vr.bonusA || 0) + (vr.bonusB || 0);
+      const adjNetB = vr.netB - (vr.bonusB || 0) + (vr.bonusA || 0);
+      vr = { ...vr, bonusA: 0, bonusB: 0, netA: adjNetA, netB: adjNetB };
+    }
     const vd = Array(N).fill(0);
     if (vr) {
-      // Only assign points to players actually in vp
-      vTeams[hi][0].filter(pi => vp.includes(pi)).forEach(pi => { vd[pi]=vr.netA; });
-      vTeams[hi][1].filter(pi => vp.includes(pi)).forEach(pi => { vd[pi]=vr.netB; });
+      if (hzEnabled) {
+        // HZ: Hero gets 2× (netA covers both slots), other team splits normally (1× each)
+        const hero = hzHero[hi];
+        const other = [0,1,2].filter(i => i !== hero);
+        // teamsForVegas = [[hero, 3], other]. Team 0 netA, Team 1 netB.
+        vd[hero] = vr.netA * 2; // Hero absorbs the virtual duplicate's share
+        other.forEach(pi => { vd[pi] = vr.netB; });
+      } else if (ghostEnabled) {
+        // Ghost's result absorbed by partner — partner gets 2x their share
+        const t0 = vTeams[hi][0], t1 = vTeams[hi][1];
+        const t0Net = vr.netA, t1Net = vr.netB;
+        t0.forEach(pi => {
+          if (pi === GHOST_IDX) return;
+          const ghostOnTeam = t0.includes(GHOST_IDX);
+          vd[pi] = ghostOnTeam ? t0Net * 2 : t0Net;
+        });
+        t1.forEach(pi => {
+          if (pi === GHOST_IDX) return;
+          const ghostOnTeam = t1.includes(GHOST_IDX);
+          vd[pi] = ghostOnTeam ? t1Net * 2 : t1Net;
+        });
+      } else {
+        vTeams[hi][0].filter(pi => vp.includes(pi)).forEach(pi => { vd[pi]=vr.netA; });
+        vTeams[hi][1].filter(pi => vp.includes(pi)).forEach(pi => { vd[pi]=vr.netB; });
+      }
     }
     // CT and Banker restricted to vp (the betting group of 4) when N > 4
+    // In Ghost mode: CT/Banker use only real 3 players
     const ct = Array(N).fill(0);
     if (games.ct && !isHIO) {
-      const vpNett = vp.map(pi => nVP[pi]);
-      const vpCt = computeCutThroat(vpNett);
-      vp.forEach((pi, idx) => { ct[pi] = vpCt[idx]; });
+      if (ghostEnabled) {
+        // 3-ball CT uses only real players
+        const realNett = [0,1,2].map(pi => n[pi]);
+        const realCt = computeCutThroat(realNett);
+        [0,1,2].forEach(pi => { ct[pi] = realCt[pi]; });
+      } else {
+        const vpNett = vp.map(pi => nVP[pi]);
+        const vpCt = computeCutThroat(vpNett);
+        vp.forEach((pi, idx) => { ct[pi] = vpCt[idx]; });
+      }
     }
     const p3 = Array(N).fill(0);
     if (games.p3 && h.par === 3 && !isHIO) {
@@ -2319,13 +2752,111 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
       vp.forEach((pi, idx) => { p3[pi] = vpP3[idx]; });
     }
     const pts = games.pts ? computePointsGame(n) : Array(N).fill(0);
-    return { g, n, nVP, vr, vd, ct, p3, pts, isHIO };
+    return { g, grossForVegas, teamsForVegas, n, nVP, vr, vd, ct, p3, pts, isHIO };
   });
   const vegasCum=Array(N).fill(0), ctCum=Array(N).fill(0), p3Cum=Array(N).fill(0), ptsCum=Array(N).fill(0);
   results.forEach((r, hi) => {
     if (!inPlay[hi]) return;
     players.forEach(pi => { vegasCum[pi]+=r.vd[pi]; ctCum[pi]+=r.ct[pi]; p3Cum[pi]+=r.p3[pi]; ptsCum[pi]+=r.pts[pi]; });
   });
+
+  // ── Sixes computation ──
+  // Walk through holes, assigning each in-play hole to a segment (1-3)
+  // Segment advances when 6 in-play holes played OR early close (lead > remaining)
+  const sixesEnabled = games.sixes && config.sixesConfig && (N === 4 || N === 5 || N === 6);
+  const sixesConfig = config.sixesConfig;
+  const sixesData = { segments: [], holeAssignments: Array(18).fill(null) };
+  if (sixesEnabled) {
+    let currentSeg = 0;
+    let segHolesPlayed = 0;
+    let segT1 = 0, segT2 = 0;
+    const segments = [
+      { segIdx: 0, teams: sixesConfig.segments[0], holes: [], t1pts: 0, t2pts: 0, closed: false, closedEarly: false, closedAt: null },
+      { segIdx: 1, teams: sixesConfig.segments[1], holes: [], t1pts: 0, t2pts: 0, closed: false, closedEarly: false, closedAt: null },
+      { segIdx: 2, teams: sixesConfig.segments[2], holes: [], t1pts: 0, t2pts: 0, closed: false, closedEarly: false, closedAt: null },
+    ];
+    const maxPtsPerHole = sixesConfig.mode === "top2" ? 2 : 1;
+    for (let hi = 0; hi < 18; hi++) {
+      if (!inPlay[hi]) continue;
+      if (currentSeg >= 3) break; // all segments closed
+      const [t1, t2] = sixesConfig.segments[currentSeg];
+      const r = results[hi];
+      // Apply shadow — replace shadowed player's nett with min(shadowed, shadow)
+      let nettForSixes = r.n;
+      if (N === 5 && sixesConfig.shadowPlayer !== null && sixesConfig.shadowPlayer !== undefined) {
+        const shadowIdx = sixesConfig.shadowPlayer;
+        const shadowedIdx = sixesConfig.shadowOf?.[currentSeg];
+        if (shadowedIdx !== null && shadowedIdx !== undefined && r.n[shadowIdx] !== null && r.n[shadowedIdx] !== null) {
+          nettForSixes = [...r.n];
+          nettForSixes[shadowedIdx] = Math.min(r.n[shadowedIdx], r.n[shadowIdx]);
+        }
+      }
+      const { t1pts, t2pts } = computeSixes(nettForSixes, t1, t2, sixesConfig.mode);
+      segments[currentSeg].holes.push({ hi, t1pts, t2pts });
+      segments[currentSeg].t1pts += t1pts;
+      segments[currentSeg].t2pts += t2pts;
+      sixesData.holeAssignments[hi] = currentSeg;
+      segHolesPlayed++;
+      // Check if segment should close
+      const holesRemaining = 6 - segHolesPlayed;
+      const lead = Math.abs(segments[currentSeg].t1pts - segments[currentSeg].t2pts);
+      const maxRemaining = holesRemaining * maxPtsPerHole;
+      if (segHolesPlayed >= 6) {
+        segments[currentSeg].closed = true;
+        segments[currentSeg].closedAt = hi;
+        currentSeg++;
+        segHolesPlayed = 0;
+      } else if (lead > maxRemaining) {
+        segments[currentSeg].closed = true;
+        segments[currentSeg].closedEarly = true;
+        segments[currentSeg].closedAt = hi;
+        currentSeg++;
+        segHolesPlayed = 0;
+      }
+    }
+    sixesData.segments = segments;
+    sixesData.currentSeg = currentSeg;
+  }
+  // Per-player sixes $ / tokens
+  const sixesPlayerDollars = Array(N).fill(0);
+  const sixesPlayerTokens = Array(N).fill(0);
+  if (sixesEnabled) {
+    sixesData.segments.forEach((seg, segIdx) => {
+      if (!seg.closed) return;
+      // For 5-ball: add shadow player to their shadowed partner's team for this segment
+      let teamsForSettle = seg.teams;
+      if (N === 5 && sixesConfig.shadowPlayer !== null && sixesConfig.shadowPlayer !== undefined) {
+        const shadowIdx = sixesConfig.shadowPlayer;
+        const shadowedIdx = sixesConfig.shadowOf?.[segIdx];
+        if (shadowedIdx !== null && shadowedIdx !== undefined) {
+          // Find which team the shadowed player is on, add shadow to that team
+          teamsForSettle = seg.teams.map(t => t.includes(shadowedIdx) ? [...t, shadowIdx] : t);
+        }
+      }
+      if (sixesConfig.stakeType === "cash") {
+        if (seg.t1pts === seg.t2pts) return; // tie, no cash payment
+        const winnerIdx = seg.t1pts > seg.t2pts ? 0 : 1;
+        const winners = teamsForSettle[winnerIdx];
+        const losers = teamsForSettle[1 - winnerIdx];
+        const payPerLoser = sixesConfig.cashAmount;
+        losers.forEach(pi => { sixesPlayerDollars[pi] -= payPerLoser; });
+        const totalCollected = payPerLoser * losers.length;
+        const perWinner = totalCollected / winners.length;
+        winners.forEach(pi => { sixesPlayerDollars[pi] += perWinner; });
+      } else {
+        // Meal tokens — tokens are BAD (shares of meal cost)
+        // Tied: every player gets 1 token
+        // Won/Lost: losers get 2 tokens each, winners get 0
+        if (seg.t1pts === seg.t2pts) {
+          teamsForSettle[0].forEach(pi => { sixesPlayerTokens[pi] += 1; });
+          teamsForSettle[1].forEach(pi => { sixesPlayerTokens[pi] += 1; });
+        } else {
+          const loserIdx = seg.t1pts > seg.t2pts ? 1 : 0;
+          teamsForSettle[loserIdx].forEach(pi => { sixesPlayerTokens[pi] += 2; });
+        }
+      }
+    });
+  }
 
   const dollars = players.map(pi =>
     (games.vegas?vegasCum[pi]*vegasVal:0) +
@@ -2354,7 +2885,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     });
   }
   const ptsDollarsArr = games.pts && ptsVal > 0 ? players.map(i => players.reduce((sum, j) => j !== i ? sum + (ptsCum[i] - ptsCum[j]) * ptsVal : sum, 0)) : Array(N).fill(0);
-  const dollarsTotal = players.map(pi => dollars[pi] + matchupPlayerDollars[pi] + ptsDollarsArr[pi]);
+  const dollarsTotal = players.map(pi => dollars[pi] + matchupPlayerDollars[pi] + ptsDollarsArr[pi] + (sixesEnabled && sixesConfig.stakeType === "cash" ? sixesPlayerDollars[pi] : 0));
   const frontPlayed = inPlay.slice(0,9).filter(Boolean).length;
   const backPlayed = inPlay.slice(9,18).filter(Boolean).length;
   const firstNine = frontPlayed >= backPlayed ? "F" : "B";
@@ -2533,7 +3064,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 {label}
               </button>
             ))}
-            <button className="tab-btn" onClick={() => { window.scrollTo(0,0); onBack({ gross, vTeams, banker, p3mult, inPlay, liveHcps, liveNames, adjustments, matchups, holeIdx }); }}
+            <button className="tab-btn" onClick={() => { window.scrollTo(0,0); onBack({ gross, vTeams, banker, p3mult, inPlay, liveHcps, liveNames, adjustments, matchups, holeIdx, ghostGross, hzHero }); }}
               style={{ padding: "6px 10px", borderRadius: 6, fontSize: 16, cursor: "pointer", transition: "all 0.15s", border: "1px solid var(--border)", background: "transparent", color: "var(--dim)" }}>
               🏠
             </button>
@@ -2634,17 +3165,19 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             </div>
             <div style={{ marginBottom: 18 }}>
               {/* Player names row */}
-              <div style={{ display: "grid", gridTemplateColumns: `repeat(${N},1fr)`, gap: N>=5?4:6, marginBottom: 10 }}>
-                {players.map(pi => (
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${ghostEnabled?4:N},1fr)`, gap: (ghostEnabled||N>=5)?4:6, marginBottom: 10 }}>
+                {(ghostEnabled ? [0,1,2,3] : players).map(pi => (
                   <div key={pi} style={{ textAlign: "center" }}>
-                    <div style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "800", fontSize: N>=5?14:20, fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{liveNames[pi]}</div>
-                    {(() => {
+                    <div style={{ color: (pi===GHOST_IDX && ghostEnabled)?(isLight?"#666":"#888"):(isLight?COLORS_LIGHT[pi]:COLORS[pi]), fontWeight: "800", fontSize: (ghostEnabled||N>=5)?14:20, fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{(pi===GHOST_IDX && ghostEnabled)?"👻 Ghost":liveNames[pi]}</div>
+                    {(pi===GHOST_IDX && ghostEnabled) ? (
+                      <div style={{ fontSize: (ghostEnabled||N>=5)?10:13, fontWeight: "600", color: "var(--dim)" }}>HCP 0</div>
+                    ) : (() => {
                       const strokes = strokesGiven(liveHcps[pi], h.si);
                       const strokeColor = strokes === 2 ? (isLight?"#16a34a":COLORS[0]) : strokes === 1 ? (isLight?"#16a34a":"#6ab87a") : "var(--dim)";
                       const strokeWeight = strokes > 0 ? "600" : "400";
                       return (
-                        <div style={{ fontSize: N>=5?10:13, fontWeight: "600", color: "var(--text)" }}>
-                          {N>=5 ? liveHcps[pi] : `HCP ${liveHcps[pi]}`}
+                        <div style={{ fontSize: (ghostEnabled||N>=5)?10:13, fontWeight: "600", color: "var(--text)" }}>
+                          {(ghostEnabled||N>=5) ? liveHcps[pi] : `HCP ${liveHcps[pi]}`}
                           <span style={{ color: strokeColor, fontWeight: strokeWeight, marginLeft: 2 }}>
                             {strokes > 0 ? `+${strokes}` : "·"}
                           </span>
@@ -2655,28 +3188,34 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 ))}
               </div>
               {/* Big score buttons */}
-              <div style={{ display: "grid", gridTemplateColumns: `repeat(${N},1fr)`, gap: N>=5?4:8, marginBottom: 10 }}>
-                {players.map(pi => {
-                  const g = parseInt(gross[holeIdx][pi], 10) || h.par;
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${ghostEnabled?4:N},1fr)`, gap: (ghostEnabled||N>=5)?4:8, marginBottom: 10 }}>
+                {(ghostEnabled ? [0,1,2,3] : players).map(pi => {
+                  const isGhost = pi === GHOST_IDX && ghostEnabled;
+                  const g = parseInt(isGhost ? ghostGross[holeIdx] : gross[holeIdx][pi], 10) || (isGhost ? h.par+1 : h.par);
                   const grossDiff = g - h.par;
+                  const setGhostScore = (val) => {
+                    setGhostGross(prev => { const n = [...prev]; n[holeIdx] = val; return n; });
+                    setInPlay(prev => { const n = [...prev]; n[holeIdx] = true; return n; });
+                  };
                   return (
-                    <div key={pi} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: N>=5?2:4 }}>
-                      <button className="score-btn" onClick={() => { const next=g+1; const par=holes[holeIdx].par; if(next >= par+5 || next <= par-2) { haptic("strong"); window.navigator?.vibrate?.([30,20,30]); } else { haptic(); } setScore(holeIdx, pi, String(next)); }}
-                        style={{ width: "100%", height: N>=5?34:44, borderRadius: 8, background: "var(--score-btn)", border: "1px solid var(--border2)", color: "#ffffff", fontSize: N>=5?16:22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.1s" }}>+</button>
-                      <ScoreBadge score={g} diff={grossDiff} large={N<5} />
-                      <button className="score-btn" onClick={() => { const next=Math.max(1,g-1); const par=holes[holeIdx].par; if(next >= par+5 || next <= par-2) { haptic("strong"); window.navigator?.vibrate?.([30,20,30]); } else { haptic(); } setScore(holeIdx, pi, String(next)); }}
-                        style={{ width: "100%", height: N>=5?34:44, borderRadius: 8, background: "var(--score-btn)", border: "1px solid var(--border2)", color: "#ffffff", fontSize: N>=5?16:22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.1s" }}>−</button>
+                    <div key={pi} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: (ghostEnabled||N>=5)?2:4, opacity: isGhost?0.7:1 }}>
+                      <button className="score-btn" onClick={() => { const next=g+1; const par=holes[holeIdx].par; if(next >= par+5 || next <= par-2) { haptic("strong"); window.navigator?.vibrate?.([30,20,30]); } else { haptic(); } if(isGhost) setGhostScore(String(next)); else setScore(holeIdx, pi, String(next)); }}
+                        style={{ width: "100%", height: (ghostEnabled||N>=5)?34:44, borderRadius: 8, background: "var(--score-btn)", border: "1px solid var(--border2)", color: "#ffffff", fontSize: (ghostEnabled||N>=5)?16:22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.1s" }}>+</button>
+                      <ScoreBadge score={g} diff={grossDiff} large={!ghostEnabled && N<5} />
+                      <button className="score-btn" onClick={() => { const next=Math.max(1,g-1); const par=holes[holeIdx].par; if(next >= par+5 || next <= par-2) { haptic("strong"); window.navigator?.vibrate?.([30,20,30]); } else { haptic(); } if(isGhost) setGhostScore(String(next)); else setScore(holeIdx, pi, String(next)); }}
+                        style={{ width: "100%", height: (ghostEnabled||N>=5)?34:44, borderRadius: 8, background: "var(--score-btn)", border: "1px solid var(--border2)", color: "#ffffff", fontSize: (ghostEnabled||N>=5)?16:22, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "all 0.1s" }}>−</button>
                     </div>
                   );
                 })}
               </div>
               {/* Nett scores */}
-              <div style={{ display: "grid", gridTemplateColumns: `repeat(${N},1fr)`, gap: N>=5?4:6 }}>
-                {players.map(pi => {
-                  const n = res.n[pi];
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${ghostEnabled?4:N},1fr)`, gap: (ghostEnabled||N>=5)?4:6 }}>
+                {(ghostEnabled ? [0,1,2,3] : players).map(pi => {
+                  const isGhost = pi === GHOST_IDX && ghostEnabled;
+                  const n = isGhost ? res.nVP[GHOST_IDX] : res.n[pi];
                   const nettDiff = n !== null ? n - h.par : null;
                   return (
-                    <div key={pi} style={{ textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "4px 2px 6px", border: "1px solid var(--border)" }}>
+                    <div key={pi} style={{ textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "4px 2px 6px", border: "1px solid var(--border)", opacity: isGhost?0.7:1 }}>
                       <div style={{ fontSize: 10, color: "var(--text)", marginBottom: 2 }}>NETT</div>
                       {n !== null ? <ScoreBadge score={n} diff={nettDiff} /> : <div style={{ fontSize: 18, color: "#2a4a2a" }}>—</div>}
                     </div>
@@ -2685,34 +3224,78 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               </div>
             </div>
             {/* Vegas */}
-            {games.vegas && <div style={{ opacity: inPlay[holeIdx] ? 1 : 0.4, pointerEvents: inPlay[holeIdx] ? "auto" : "none" }}><Sect title="Vegas — Teams">
-              <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 8 }}>
-                Pick <span style={{ color: "var(--accent)", fontWeight: "600" }}>{liveNames[vp[0]]}</span>'s partner
-              </div>
-              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                {vp.slice(1).map(pi => {
-                  const isPartner = vTeams[holeIdx][0].includes(pi);
-                  return (
-                    <button key={pi} style={{ flex: 1, padding: "14px 0", borderRadius: 8, cursor: "pointer",
-                      border: `1px solid ${isPartner ? COLORS[pi] : "#1e3a1e"}`,
-                      background: isPartner ? COLORS[pi]+"33" : "transparent",
-                      transition: "all 0.15s" }}
-                      onClick={() => { const others=vp.slice(1).filter(x=>x!==pi); setVTeam(holeIdx,0,[vp[0],pi]); setVTeam(holeIdx,1,others); }}>
-                      <div style={{ fontSize: 26, fontWeight: "800", color: isPartner?(isLight?COLORS_LIGHT[pi]:COLORS[pi]):(isLight?"#666666":"#5a8a5a"), marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</div>
-                      <div style={{ fontSize: 30, fontWeight: "700", color: isPartner?COLORS[pi]:"#3a5a3a", lineHeight: 1, fontFamily: "'Bebas Neue', sans-serif" }}>{isPartner ? "✓" : "—"}</div>
-                    </button>
-                  );
-                })}
-              </div>
-              <div style={{ fontSize: 17, fontWeight: "700", color: "var(--text)", marginBottom: 8 }}>
-                <span style={{ color: "var(--accent)" }}>{liveNames[vTeams[holeIdx][0][0]]}</span>+<span style={{ color: COLORS[vTeams[holeIdx][0][1]] }}>{liveNames[vTeams[holeIdx][0][1]]}</span>
-                {" "}<span style={{ color: "#2a4a2a" }}>vs</span>{" "}
-                <span style={{ color: isLight?COLORS_LIGHT[vTeams[holeIdx][1][0]]:COLORS[vTeams[holeIdx][1][0]] }}>{liveNames[vTeams[holeIdx][1][0]]}</span>+<span style={{ color: isLight?COLORS_LIGHT[vTeams[holeIdx][1][1]]:COLORS[vTeams[holeIdx][1][1]] }}>{liveNames[vTeams[holeIdx][1][1]]}</span>
-              </div>
+            {games.vegas && <div style={{ opacity: inPlay[holeIdx] ? 1 : 0.4, pointerEvents: inPlay[holeIdx] ? "auto" : "none" }}><Sect title={hzEnabled ? "Vegas — Pick Hero 🦸" : ghostEnabled ? "Vegas — Teams 👻" : "Vegas — Teams"}>
+              {hzEnabled ? (
+                <>
+                  <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 8 }}>
+                    Pick the <span style={{ color: "var(--accent)", fontWeight: "600" }}>Hero</span> — their score pairs with itself. Other two form opposing team.
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    {[0,1,2].map(pi => {
+                      const isHero = hzHero[holeIdx] === pi;
+                      const col = isLight?COLORS_LIGHT[pi]:COLORS[pi];
+                      return (
+                        <button key={pi} style={{ flex: 1, padding: "14px 0", borderRadius: 8, cursor: "pointer",
+                          border: `1px solid ${isHero ? col : "#1e3a1e"}`,
+                          background: isHero ? col+"33" : "transparent",
+                          transition: "all 0.15s" }}
+                          onClick={() => { setHzHero(prev => { const n = [...prev]; n[holeIdx] = pi; return n; }); }}>
+                          <div style={{ fontSize: 20, fontWeight: "800", color: isHero?col:(isLight?"#666666":"#5a8a5a"), marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</div>
+                          <div style={{ fontSize: 18, fontWeight: "700", color: isHero?col:"#3a5a3a", lineHeight: 1, fontFamily: "'Bebas Neue', sans-serif" }}>{isHero ? "🦸 HERO" : "—"}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: "700", color: "var(--text)", marginBottom: 8, textAlign: "center" }}>
+                    {(() => {
+                      const hero = hzHero[holeIdx];
+                      const other = [0,1,2].filter(i => i !== hero);
+                      return (
+                        <>
+                          <span style={{ color: getColor(hero) }}>{liveNames[hero]}×2</span>
+                          {" "}<span style={{ color: "#2a4a2a" }}>vs</span>{" "}
+                          <span style={{ color: getColor(other[0]) }}>{liveNames[other[0]]}</span>+<span style={{ color: getColor(other[1]) }}>{liveNames[other[1]]}</span>
+                        </>
+                      );
+                    })()}
+                  </div>
+                  {!hzBonus && <div style={{ fontSize: 10, color: "var(--dim)", textAlign: "center", marginBottom: 8 }}>No bonus (multiplier applies)</div>}
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 8 }}>
+                    Pick <span style={{ color: "var(--accent)", fontWeight: "600" }}>{getName(vp[0])}</span>'s partner
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    {vp.slice(1).map(pi => {
+                      const isPartner = vTeams[holeIdx][0].includes(pi);
+                      const col = pi === GHOST_IDX ? (isLight ? "#666" : "#888") : COLORS[pi];
+                      return (
+                        <button key={pi} style={{ flex: 1, padding: "14px 0", borderRadius: 8, cursor: "pointer",
+                          border: `1px solid ${isPartner ? col : "#1e3a1e"}`,
+                          background: isPartner ? col+"33" : "transparent",
+                          transition: "all 0.15s" }}
+                          onClick={() => { const others=vp.slice(1).filter(x=>x!==pi); setVTeam(holeIdx,0,[vp[0],pi]); setVTeam(holeIdx,1,others); }}>
+                          <div style={{ fontSize: 26, fontWeight: "800", color: isPartner?(pi===GHOST_IDX?col:(isLight?COLORS_LIGHT[pi]:COLORS[pi])):(isLight?"#666666":"#5a8a5a"), marginBottom: 2, fontFamily: "'DM Sans', sans-serif" }}>{getName(pi)}</div>
+                          <div style={{ fontSize: 30, fontWeight: "700", color: isPartner?col:"#3a5a3a", lineHeight: 1, fontFamily: "'Bebas Neue', sans-serif" }}>{isPartner ? "✓" : "—"}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 17, fontWeight: "700", color: "var(--text)", marginBottom: 8 }}>
+                    <span style={{ color: "var(--accent)" }}>{getName(vTeams[holeIdx][0][0])}</span>+<span style={{ color: getColor(vTeams[holeIdx][0][1]) }}>{getName(vTeams[holeIdx][0][1])}</span>
+                    {" "}<span style={{ color: "#2a4a2a" }}>vs</span>{" "}
+                    <span style={{ color: getColor(vTeams[holeIdx][1][0]) }}>{getName(vTeams[holeIdx][1][0])}</span>+<span style={{ color: getColor(vTeams[holeIdx][1][1]) }}>{getName(vTeams[holeIdx][1][1])}</span>
+                  </div>
+                </>
+              )}
               {res.vr && (() => {
                 const r = res.vr;
-                const t0=vTeams[holeIdx][0], t1=vTeams[holeIdx][1];
-                const t0name=t0.map(i=>names[i]).join(" + "), t1name=t1.map(i=>names[i]).join(" + ");
+                const t0 = res.teamsForVegas ? res.teamsForVegas[0] : vTeams[holeIdx][0];
+                const t1 = res.teamsForVegas ? res.teamsForVegas[1] : vTeams[holeIdx][1];
+                // For HZ, show Hero as "Hero×2" instead of Hero+Hero
+                const t0name = hzEnabled ? `${liveNames[hzHero[holeIdx]]}×2` : t0.map(i=>getName(i)).join(" + ");
+                const t1name = hzEnabled ? t1.map(i=>liveNames[i]).join(" + ") : t1.map(i=>getName(i)).join(" + ");
                 const winnerIsA = r.tied ? r.grossWinnerIsA : r.effA < r.effB;
                 const tied = r.tied && r.bonusA === 0 && r.bonusB === 0;
                 const winnerName = winnerIsA != null ? (winnerIsA ? t0name : t1name) : null;
@@ -2742,10 +3325,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                     {vegasRules !== "classic" && (
                       <StepRow label="STEP 1 — GROSS FLIP CHECK">
                         {(() => {
-                          const gvA2 = vegasNum(parseInt(res.g[t0[0]],10), parseInt(res.g[t0[1]],10));
-                          const gvB2 = vegasNum(parseInt(res.g[t1[0]],10), parseInt(res.g[t1[1]],10));
-                          const tA = r.trigA || teamTrigger(res.g[t0[0]], res.g[t0[1]], h.par);
-                          const tB = r.trigB || teamTrigger(res.g[t1[0]], res.g[t1[1]], h.par);
+                          const gvA2 = vegasNum(parseInt(res.grossForVegas[t0[0]],10), parseInt(res.grossForVegas[t0[1]],10));
+                          const gvB2 = vegasNum(parseInt(res.grossForVegas[t1[0]],10), parseInt(res.grossForVegas[t1[1]],10));
+                          const tA = r.trigA || teamTrigger(res.grossForVegas[t0[0]], res.grossForVegas[t0[1]], h.par);
+                          const tB = r.trigB || teamTrigger(res.grossForVegas[t1[0]], res.grossForVegas[t1[1]], h.par);
                           const bothTriggered = tA.flip && tB.flip;
                           const flipAppliedA = r.flipA; // A's number was flipped by B
                           const flipAppliedB = r.flipB; // B's number was flipped by A
@@ -2807,7 +3390,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                           <div style={{ textAlign: "center" }}>
                             <div style={{ fontSize: 18, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t0name}</div>
                             <div style={{ fontSize: 28, fontWeight: "700", color: r.grossWinnerIsA ? COLORS[0] : "#e8f5e8", fontFamily: "'Bebas Neue', sans-serif" }}>
-                              {vegasNum(parseInt(res.g[t0[0]],10), parseInt(res.g[t0[1]],10))}
+                              {vegasNum(parseInt(res.grossForVegas[t0[0]],10), parseInt(res.grossForVegas[t0[1]],10))}
                             </div>
                             {r.grossWinnerIsA && <div style={{ fontSize: 10, color: "var(--accent)", marginTop: 2 }}>WINS BONUS</div>}
                           </div>
@@ -2815,7 +3398,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                           <div style={{ textAlign: "center" }}>
                             <div style={{ fontSize: 18, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{t1name}</div>
                             <div style={{ fontSize: 28, fontWeight: "700", color: !r.grossWinnerIsA ? COLORS[0] : "#e8f5e8", fontFamily: "'Bebas Neue', sans-serif" }}>
-                              {vegasNum(parseInt(res.g[t1[0]],10), parseInt(res.g[t1[1]],10))}
+                              {vegasNum(parseInt(res.grossForVegas[t1[0]],10), parseInt(res.grossForVegas[t1[1]],10))}
                             </div>
                             {!r.grossWinnerIsA && <div style={{ fontSize: 10, color: "var(--accent)", marginTop: 2 }}>WINS BONUS</div>}
                           </div>
@@ -2889,10 +3472,11 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                       </div>
                       <div style={{ display: "grid", gridTemplateColumns: `repeat(4,1fr)`, gap: 6 }}>
                         {vp.map(pi => {
+                          if (pi === GHOST_IDX && ghostEnabled) return null; // hide Ghost from $ display
                           const v = res.vd[pi];
                           return (
                             <div key={pi} style={{ background: "var(--card)", borderRadius: 6, padding: "8px 4px", textAlign: "center", border: `1px solid ${v>0?"#2a5a2a":v<0?"#5a2a2a":"#1e3a1e"}` }}>
-                              <div style={{ fontSize: 15, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], marginBottom: 2, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{names[pi]}</div>
+                              <div style={{ fontSize: 15, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], marginBottom: 2, fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>{names[pi]||`P${pi+1}`}</div>
                               <div style={{ fontSize: 26, fontWeight: "700", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontFamily: "'Bebas Neue', sans-serif" }}>
                                 {v > 0 ? "+" : ""}{v}
                               </div>
@@ -2920,7 +3504,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         color: banker[holeIdx]===pi?(isLight?COLORS_LIGHT[pi]:COLORS[pi]):"var(--dim)",
                         fontFamily: "'DM Sans', sans-serif", fontSize: 18, fontWeight: "700" }}
                         onClick={() => { setBanker(prev => { const n=[...prev]; n[holeIdx]=pi; return n; }); }}>
-                        {names[pi]}
+                        {names[pi]||`P${pi+1}`}
                       </button>
                     ))}
                   </div>
@@ -3188,6 +3772,99 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               </div>
             </Sect>
             )}
+
+            {/* Sixes standalone section */}
+            {sixesEnabled && (() => {
+              const segIdx = sixesData.holeAssignments[holeIdx];
+              if (segIdx === null || segIdx === undefined) {
+                // Hole not yet played / not in play — show context for current segment
+                if (sixesData.currentSeg >= 3) return null; // all segments closed
+                const seg = sixesData.segments[sixesData.currentSeg];
+                const relT1 = Math.max(0, seg.t1pts - seg.t2pts);
+                const relT2 = Math.max(0, seg.t2pts - seg.t1pts);
+                return (
+                  <Sect title={`Sixes — ${["1st", "2nd", "3rd"][sixesData.currentSeg]}`}>
+                    <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", padding: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, fontSize: 15 }}>
+                        <div style={{ flex: 1 }}>
+                          {seg.teams[0].map(pi => {
+                            const shadowed = N === 5 && sixesConfig.shadowOf?.[sixesData.holeAssignments[holeIdx] ?? sixesData.currentSeg] === pi;
+                            return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginRight: 6 }}>
+                              {(liveNames[pi]||`P${pi+1}`).slice(0,5)}
+                              {shadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2, fontSize: 11 }}>+{(liveNames[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                            </span>;
+                          })}
+                        </div>
+                        <span style={{ color: "var(--dim)", fontSize: 12 }}>vs</span>
+                        <div style={{ flex: 1, textAlign: "right" }}>
+                          {seg.teams[1].map(pi => {
+                            const shadowed = N === 5 && sixesConfig.shadowOf?.[sixesData.holeAssignments[holeIdx] ?? sixesData.currentSeg] === pi;
+                            return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginLeft: 6 }}>
+                              {(liveNames[pi]||`P${pi+1}`).slice(0,5)}
+                              {shadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2, fontSize: 11 }}>+{(liveNames[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                            </span>;
+                          })}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, fontSize: 26, fontWeight: "700" }}>
+                        <span style={{ color: relT1 > 0 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT1}</span>
+                        <span style={{ color: "var(--dim)", fontSize: 18 }}>—</span>
+                        <span style={{ color: relT2 > 0 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT2}</span>
+                      </div>
+                    </div>
+                  </Sect>
+                );
+              }
+              const seg = sixesData.segments[segIdx];
+              const thisHole = seg.holes.find(h => h.hi === holeIdx);
+              if (!thisHole) return null;
+              const relT1 = Math.max(0, seg.t1pts - seg.t2pts);
+              const relT2 = Math.max(0, seg.t2pts - seg.t1pts);
+              const closeLabel = seg.closed
+                ? (seg.closedEarly ? ` (closed early — ${seg.holes.length} holes)` : ` (closed)`)
+                : "";
+              return (
+                <Sect title={`Sixes — ${["1st", "2nd", "3rd"][segIdx]}${closeLabel}`}>
+                  <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", padding: 12, fontFamily: "'DM Sans', sans-serif" }}>
+                    {/* Teams row */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10, fontSize: 15 }}>
+                      <div style={{ flex: 1 }}>
+                        {seg.teams[0].map(pi => {
+                            const shadowed = N === 5 && sixesConfig.shadowOf?.[sixesData.holeAssignments[holeIdx] ?? sixesData.currentSeg] === pi;
+                            return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginRight: 6 }}>
+                              {(liveNames[pi]||`P${pi+1}`).slice(0,5)}
+                              {shadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2, fontSize: 11 }}>+{(liveNames[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                            </span>;
+                          })}
+                      </div>
+                      <span style={{ color: "var(--dim)", fontSize: 12 }}>vs</span>
+                      <div style={{ flex: 1, textAlign: "right" }}>
+                        {seg.teams[1].map(pi => {
+                            const shadowed = N === 5 && sixesConfig.shadowOf?.[sixesData.holeAssignments[holeIdx] ?? sixesData.currentSeg] === pi;
+                            return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginLeft: 6 }}>
+                              {(liveNames[pi]||`P${pi+1}`).slice(0,5)}
+                              {shadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2, fontSize: 11 }}>+{(liveNames[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                            </span>;
+                          })}
+                      </div>
+                    </div>
+                    {/* This hole's result */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, fontSize: 14, color: "var(--text)", marginBottom: 8 }}>
+                      <span>This hole:</span>
+                      <span style={{ fontWeight: "700", fontSize: 17, color: thisHole.t1pts > thisHole.t2pts ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{thisHole.t1pts}</span>
+                      <span style={{ color: "var(--dim)" }}>—</span>
+                      <span style={{ fontWeight: "700", fontSize: 17, color: thisHole.t2pts > thisHole.t1pts ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{thisHole.t2pts}</span>
+                    </div>
+                    {/* Segment running tally (relative) */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, fontSize: 28, fontWeight: "700", borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+                      <span style={{ color: relT1 > 0 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT1}</span>
+                      <span style={{ color: "var(--dim)", fontSize: 18 }}>—</span>
+                      <span style={{ color: relT2 > 0 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT2}</span>
+                    </div>
+                  </div>
+                </Sect>
+              );
+            })()}
           </>
         ) : (
           <TotalsView names={liveNames} results={results} holes={holes} vTeams={vTeams}
@@ -3196,9 +3873,12 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             vegasVal={vegasVal} ctVal={ctVal} p3Val={p3Val} ptsVal={ptsVal} inPlay={inPlay}
             adjustments={adjustments} setAdjustments={setAdjustments}
             liveHcps={liveHcps} hcpThreshold={hcpThreshold} games={games}
-            vegasPlayers={vp}
+            vegasPlayers={ghostEnabled ? vp.filter(i => i !== GHOST_IDX) : vp}
             matchupEnabled={matchupEnabled} nassauResults={matchupResults} matchups={matchups}
+            sixesEnabled={sixesEnabled} sixesData={sixesData} sixesConfig={sixesConfig}
+            sixesPlayerDollars={sixesPlayerDollars} sixesPlayerTokens={sixesPlayerTokens}
             qrPayload={qrPayload}
+            hzEnabled={hzEnabled} ghostEnabled={ghostEnabled}
             saveMsg={saveMsg}
             onSave={() => {
               const roundData = {
@@ -3222,7 +3902,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               };
               exportRound(roundData);
             }}
-            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, ptsCum, vegasVal, ctVal, p3Val, ptsVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vegasPlayers: vp, vTeams, banker, p3mult, hioRule }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
+            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, ptsCum, vegasVal, ctVal, p3Val, ptsVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vegasPlayers: vp, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
             onHole={hi => { if (!inPlay[hi]) window.scrollTo(0,0); setHoleIdx(hi); setView("hole"); }}
             isLight={isLight} />
         )}
@@ -3270,7 +3950,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
 }
 
 // TOTALS VIEW
-function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, ptsCum, dollars, dollarsSubtotal, playerCount, vegasVal, ctVal, p3Val, ptsVal, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, vegasPlayers, onSave, onExport, onReport, saveMsg, onHole, isLight, matchupEnabled, nassauResults: matchupResults, matchups, qrPayload }) {
+function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, ptsCum, dollars, dollarsSubtotal, playerCount, vegasVal, ctVal, p3Val, ptsVal, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, vegasPlayers, onSave, onExport, onReport, saveMsg, onHole, isLight, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, qrPayload, hzEnabled, ghostEnabled }) {
   const isSolo = playerCount === 1;
   const vp = vegasPlayers || [0,1,2,3];
   const [tab, setTab] = useState("board");
@@ -3300,7 +3980,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
       </div>
       {saveMsg && <div style={{ textAlign: "center", fontSize: 12, color: "var(--accent)", marginBottom: 10, fontFamily: "'DM Sans', sans-serif" }}>{saveMsg}</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CT"],["par3","BANKER"],["pts","PTS"],["nassau","MATCH"]].filter(([t]) => t==="board" || (!isSolo && ((t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3) || (t==="pts"&&games.pts) || (t==="nassau"&&matchupEnabled)))).map(([t,label]) => (
+        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CT"],["par3","BANKER"],["pts","PTS"],["sixes","SIXES"],["nassau","MATCH"]].filter(([t]) => t==="board" || (!isSolo && ((t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3) || (t==="pts"&&games.pts) || (t==="sixes"&&sixesEnabled) || (t==="nassau"&&matchupEnabled)))).map(([t,label]) => (
           <button key={t} className="tab-btn" onClick={() => setTab(t)}
             style={{ padding: "8px 12px", borderRadius: 6, fontSize: 11, letterSpacing: 1, cursor: "pointer",
               border: `1px solid ${tab===t?COLORS[0]:"var(--border)"}`,
@@ -3330,14 +4010,14 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                     <div style={{ padding: "5px 6px", fontSize: 11, color: "#3a6a3a" }} />
                     {RP.map(i => (
                       <div key={i} style={{ padding: "5px 3px", textAlign: "center", fontFamily: "'DM Sans', sans-serif" }}>
-                        <div style={{ fontSize: 14, color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "700" }}>{names[i].slice(0,5)}</div>
+                        <div style={{ fontSize: 14, color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "700" }}>{(names[i]||"").slice(0,5)}</div>
                         {games.pts && <div style={{ fontSize: 10, color: "var(--text)" }}>{relHcps[i]}</div>}
                       </div>
                     ))}
                   </div>
                 );
               })()}
-              {[["Vegas","vegas",vegasCum,vegasVal],["CT","ct",ctCum,ctVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
+              {[[`Vegas${hzEnabled?" H":ghostEnabled?" G":""}`,"vegas",vegasCum,vegasVal],["CT","ct",ctCum,ctVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
                 <div key={label} style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "5px 4px", fontSize: 13, color: "var(--text)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>{label}</div>
                   {RP.map(i => {
@@ -3357,13 +4037,13 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
               )}
               {/* Subtotal — only when Vegas/CT/Banker active */}
               {(games.vegas || games.ct || games.p3) && (
-              <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, background: "var(--card)", borderBottom: (matchupEnabled||games.pts) ? "2px solid var(--border2)" : "none" }}>
+              <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, background: "var(--card)", borderBottom: (matchupEnabled||games.pts||sixesEnabled) ? "2px solid var(--border2)" : "none" }}>
                 <div style={{ padding: "5px 6px", fontSize: 13, color: "var(--text)", fontWeight: "700", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>
-                  {(matchupEnabled||games.pts) ? "Sub" : "TOTAL"}
+                  {(matchupEnabled||games.pts||sixesEnabled) ? "Sub" : "TOTAL"}
                 </div>
                 {RP.map(i => {
                   const v = (dollarsSubtotal||dollars)[i];
-                  return <div key={i} style={{ padding: (matchupEnabled||games.pts)?"8px 4px":"10px 4px", textAlign: "center", fontSize: (matchupEnabled||games.pts)?16:22, fontWeight: "700", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
+                  return <div key={i} style={{ padding: (matchupEnabled||games.pts||sixesEnabled)?"8px 4px":"10px 4px", textAlign: "center", fontSize: (matchupEnabled||games.pts||sixesEnabled)?16:22, fontWeight: "700", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
                 })}
               </div>
               )}
@@ -3374,11 +4054,35 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                 const ptsLabel = isMeal ? "Pts (pt)" : `Pts ($${ptsVal})`;
                 return (
                   <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length}, 1fr)`, borderBottom: (matchupEnabled?"1px solid var(--border)":"none") }}>
-                    <div style={{ padding: "5px 4px", fontSize: 13, color: "var(--text)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>{ptsLabel}</div>
+                    <div style={{ padding: "8px 6px", fontSize: 13, color: "var(--text)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>{ptsLabel}</div>
                     {RP.map(i => {
                       const v = ptsDollars[i];
                       const col = isMeal ? "var(--text)" : v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a";
-                      return <div key={i} style={{ padding: "5px 3px", textAlign: "center", fontSize: 14, fontWeight: "600", color: col, fontFamily: "'DM Sans', sans-serif" }}>{isMeal ? ptsCum[i] : (v>0?"+":"")+v||"—"}</div>;
+                      return <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 14, fontWeight: "600", color: col, fontFamily: "'DM Sans', sans-serif" }}>{isMeal ? ptsCum[i] : (v>0?"+":"")+v||"—"}</div>;
+                    })}
+                  </div>
+                );
+              })()}
+              
+              {/* Sixes row */}
+              {sixesEnabled && (() => {
+                const isCash = sixesConfig.stakeType === "cash";
+                const totalTokens = sixesPlayerTokens.reduce((s, v) => s + v, 0);
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ padding: "8px 6px", display: "flex", flexDirection: "column", justifyContent: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden" }}>
+                      <div style={{ fontSize: 13, color: "var(--text)", fontWeight: "600", lineHeight: 1.1 }}>Sixes</div>
+                      <div style={{ fontSize: 10, color: "var(--text)", lineHeight: 1.1, marginTop: 2 }}>{isCash ? `$${sixesConfig.cashAmount}` : `${totalTokens} token${totalTokens===1?"":"s"}`}</div>
+                    </div>
+                    {RP.map(i => {
+                      if (isCash) {
+                        const v = sixesPlayerDollars[i];
+                        const col = v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a";
+                        return <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 14, fontWeight: "600", color: col, fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
+                      } else {
+                        const v = sixesPlayerTokens[i];
+                        return <div key={i} style={{ padding: "8px 4px", textAlign: "center", fontSize: 14, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{v||"—"}</div>;
+                      }
                     })}
                   </div>
                 );
@@ -3403,7 +4107,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                 );
               })()}
               {/* Grand total */}
-              {(matchupEnabled || (games.pts && ptsVal > 0)) && (
+              {(matchupEnabled || (games.pts && ptsVal > 0) || (sixesEnabled && sixesConfig.stakeType === "cash")) && (
                 <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, background: "var(--card)" }}>
                   <div style={{ padding: "10px 10px", fontSize: 12, color: "var(--text)", fontWeight: "700", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>TOTAL</div>
                   {RP.map(i => (
@@ -3433,7 +4137,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
             <div style={{ display: "grid", gridTemplateColumns: `repeat(${RP.length},1fr)`, gap: 8 }}>
               {RP.map(pi => (
                 <div key={pi} style={{ textAlign: "center" }}>
-                  <div style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontSize: 16, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>{names[pi]}</div>
+                  <div style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontSize: 16, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>{names[pi]||`P${pi+1}`}</div>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                     <button className="pm-btn" onClick={() => { const n=[...adjustments]; n[pi]+=1; setAdjustments(n); }} style={{ ...S.pmBtnLarge }}>+</button>
                     <div style={{ fontSize: 22, fontWeight: "700", color: adjustments[pi]>0?COLORS[0]:adjustments[pi]<0?"#f87171":"#4a7a4a", fontFamily: "'DM Sans', sans-serif" }}>
@@ -3500,7 +4204,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                     {RP.map(pi => (
                       <div key={pi} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                         <div style={{ width: 12, height: 2, background: COLORS[pi], borderRadius: 1 }}/>
-                        <span style={{ fontSize: 13, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>{names[pi]}</span>
+                        <span style={{ fontSize: 13, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "600", fontFamily: "'DM Sans', sans-serif" }}>{names[pi]||`P${pi+1}`}</span>
                       </div>
                     ))}
                   </div>
@@ -3512,11 +4216,11 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
         </>
       )}
             {tab === "vegas" && (
-        <Sect title="Vegas — Hole by Hole">
+        <Sect title={`Vegas — Hole by Hole${hzEnabled?" (Hero or Zero)":ghostEnabled?" (Ghost)":""}`}>
           <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
           <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden", minWidth: 320 }}>
             <div style={{ display: "grid", gridTemplateColumns: `28px 56px 40px 36px repeat(4,1fr)`, borderBottom: "1px solid var(--border)" }}>
-              {["H","Teams","Nums","Trig",...vp.map(i=>names[i].slice(0,5))].map((h,i) => (
+              {["H","Teams","Nums","Trig",...vp.map(i=>(names[i]||"Ghost").slice(0,5))].map((h,i) => (
                 <div key={i} style={{ ...S.th, padding: "8px 2px", fontSize: i>3?14:11, fontWeight: i>3?"700":"500", color: i>3?(isLight?COLORS_LIGHT[vp[i-4]]:COLORS[vp[i-4]]):"var(--muted)" }}>{h}</div>
               ))}
             </div>
@@ -3529,7 +4233,14 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
               return (
                 <div key={hi} onClick={() => onHole(hi)} style={{ display: "grid", gridTemplateColumns: `28px 56px 40px 36px repeat(4,1fr)`, borderBottom: "1px solid var(--border)", cursor: "pointer", opacity: active?1:0.35 }}>
                   <div style={S.td}>{hi+1}</div>
-                  <div style={{ ...S.td, fontSize: 10 }}>{isHIO ? <span style={{ color: "#fbbf24", fontWeight: "700", fontSize: 9 }}>HIO</span> : `${vTeams[hi][0].map(i=>names[i][0]).join("")}|${vTeams[hi][1].map(i=>names[i][0]).join("")}`}</div>
+                  <div style={{ ...S.td, fontSize: 10 }}>{isHIO ? <span style={{ color: "#fbbf24", fontWeight: "700", fontSize: 9 }}>HIO</span> : (() => {
+                    const t0 = r.teamsForVegas ? r.teamsForVegas[0] : vTeams[hi][0];
+                    const t1 = r.teamsForVegas ? r.teamsForVegas[1] : vTeams[hi][1];
+                    // De-dupe (HZ has Hero twice)
+                    const t0u = [...new Set(t0)];
+                    const t1u = [...new Set(t1)];
+                    return `${t0u.map(i=>(names[i]||"G")[0]).join("")}${t0.length > t0u.length ? "×2" : ""}|${t1u.map(i=>(names[i]||"G")[0]).join("")}`;
+                  })()}</div>
                   <div style={{ ...S.td, fontSize: 10 }}>{!isHIO && active && r.vr ? `${r.vr.effA}|${r.vr.effB}` : ""}</div>
                   <div style={{ ...S.td, fontSize: 10, color: trig?"#e879f9":"#4a7a4a", fontWeight: trig?"700":"400" }}>{!isHIO && active ? trig : ""}</div>
                   {vp.map(i => { const v=active&&!isHIO?r.vd[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{isHIO ? <span style={{ color: "#fbbf24", fontSize: 9 }}>—</span> : v!==0?(v>0?"+":"")+v:"—"}</div>; })}
@@ -3549,7 +4260,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
         <Sect title="Cut Throat — Hole by Hole">
           <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
             <div style={{ display: "grid", gridTemplateColumns: `28px 28px repeat(4,1fr)`, borderBottom: "1px solid var(--border)" }}>
-              {["H","Par",...vp.map(i=>names[i].slice(0,5))].map((h,i) => (
+              {["H","Par",...vp.map(i=>(names[i]||"Ghost").slice(0,5))].map((h,i) => (
                 <div key={i} style={{ ...S.th, padding: "8px 4px", fontSize: i>1?14:11, fontWeight: i>1?"700":"500", color: i>1?(isLight?COLORS_LIGHT[vp[i-2]]:COLORS[vp[i-2]]):"var(--muted)" }}>{h}</div>
               ))}
             </div>
@@ -3576,7 +4287,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
         <Sect title="Banker — Hole by Hole">
           <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
             <div style={{ display: "grid", gridTemplateColumns: `28px repeat(4,1fr)`, borderBottom: "1px solid var(--border)" }}>
-              {["H",...vp.map(i=>names[i].slice(0,5))].map((h,i) => (
+              {["H",...vp.map(i=>(names[i]||"Ghost").slice(0,5))].map((h,i) => (
                 <div key={i} style={{ ...S.th, padding: "8px 4px", fontSize: i>0?14:11, fontWeight: i>0?"700":"500", color: i>0?(isLight?COLORS_LIGHT[vp[i-1]]:COLORS[vp[i-1]]):"var(--muted)" }}>{h}</div>
               ))}
             </div>
@@ -3603,7 +4314,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
           <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
             <div style={{ display: "grid", gridTemplateColumns: `28px repeat(${playerCount}, 1fr)`, borderBottom: "1px solid var(--border)" }}>
               <div style={{ ...S.th }}>H</div>
-              {RP.map(i => <div key={i} style={{ ...S.th, color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "700" }}>{names[i].slice(0,5)}</div>)}
+              {RP.map(i => <div key={i} style={{ ...S.th, color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "700" }}>{(names[i]||"").slice(0,5)}</div>)}
             </div>
             {results.map((r, hi) => {
               if (!r.pts || r.pts.every(v => v === 0)) return null;
@@ -3630,7 +4341,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                   const net = RP.reduce((sum,j) => j!==i ? sum+(ptsCum[i]-ptsCum[j])*ptsVal : sum, 0);
                   return (
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                      <span style={{ color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "600", fontSize: 14, fontFamily: "'DM Sans', sans-serif" }}>{names[i]}</span>
+                      <span style={{ color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "600", fontSize: 14, fontFamily: "'DM Sans', sans-serif" }}>{names[i]||`P${i+1}`}</span>
                       <span style={{ fontSize: 16, fontWeight: "700", color: net>0?(isLight?"#16a34a":COLORS[0]):net<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{net>0?"+":""}{net}</span>
                     </div>
                   );
@@ -3642,6 +4353,118 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                 Points only — settle outside
               </div>
             )}
+          </div>
+        </Sect>
+      )}
+      {tab === "sixes" && sixesEnabled && (
+        <Sect title="Sixes — Segments">
+          {sixesData.segments.map((seg, si) => {
+            const relT1 = Math.max(0, seg.t1pts - seg.t2pts);
+            const relT2 = Math.max(0, seg.t2pts - seg.t1pts);
+            const isTied = seg.closed && seg.t1pts === seg.t2pts;
+            const winnerIdx = seg.t1pts > seg.t2pts ? 0 : seg.t2pts > seg.t1pts ? 1 : -1;
+            const segLabel = ["1st", "2nd", "3rd"][si];
+            const holesCount = seg.holes.length;
+            const closeNote = seg.closed
+              ? (seg.closedEarly ? `closed early — ${holesCount} holes` : `closed — ${holesCount} holes`)
+              : (holesCount > 0 ? `${holesCount} of 6 holes` : "not started");
+            return (
+              <div key={si} style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", padding: 12, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontSize: 14, fontWeight: "700", color: "var(--text)" }}>{segLabel}</span>
+                  <span style={{ fontSize: 11, color: "var(--dim)" }}>{closeNote}</span>
+                </div>
+                {/* Teams */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 13 }}>
+                  <div style={{ flex: 1 }}>
+                    {seg.teams[0].map(pi => {
+                      const shadowed = playerCount === 5 && sixesConfig.shadowOf?.[si] === pi;
+                      return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginRight: 4 }}>
+                        {(names[pi]||`P${pi+1}`).slice(0,5)}
+                        {shadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2, fontSize: 11 }}>+{(names[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                      </span>;
+                    })}
+                  </div>
+                  <span style={{ color: "var(--dim)", fontSize: 11 }}>vs</span>
+                  <div style={{ flex: 1, textAlign: "right" }}>
+                    {seg.teams[1].map(pi => {
+                      const shadowed = playerCount === 5 && sixesConfig.shadowOf?.[si] === pi;
+                      return <span key={pi} style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", marginLeft: 4 }}>
+                        {(names[pi]||`P${pi+1}`).slice(0,5)}
+                        {shadowed && <span style={{ color: "var(--dim)", fontWeight: "400", marginLeft: 2, fontSize: 11 }}>+{(names[sixesConfig.shadowPlayer]||`P${sixesConfig.shadowPlayer+1}`).slice(0,3)}</span>}
+                      </span>;
+                    })}
+                  </div>
+                </div>
+                {/* Score */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, fontSize: 22, fontWeight: "700", borderTop: "1px solid var(--border)", paddingTop: 8, marginBottom: 6 }}>
+                  <span style={{ color: winnerIdx === 0 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT1}</span>
+                  <span style={{ color: "var(--dim)", fontSize: 14 }}>—</span>
+                  <span style={{ color: winnerIdx === 1 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT2}</span>
+                </div>
+                {/* Result */}
+                {seg.closed && (
+                  <div style={{ textAlign: "center", fontSize: 12, color: "var(--text)" }}>
+                    {(() => {
+                      // Build teams including shadow for 5-ball
+                      let teamsForDisplay = seg.teams;
+                      if (playerCount === 5 && sixesConfig.shadowPlayer !== null && sixesConfig.shadowPlayer !== undefined) {
+                        const shadowIdx = sixesConfig.shadowPlayer;
+                        const shadowedIdx = sixesConfig.shadowOf?.[si];
+                        if (shadowedIdx !== null && shadowedIdx !== undefined) {
+                          teamsForDisplay = seg.teams.map(t => t.includes(shadowedIdx) ? [...t, shadowIdx] : t);
+                        }
+                      }
+                      if (isTied) {
+                        return sixesConfig.stakeType === "cash"
+                          ? "Halved — no payment"
+                          : "Halved — each player +1 token";
+                      }
+                      const winners = teamsForDisplay[winnerIdx].map(pi => (names[pi]||`P${pi+1}`).slice(0,5)).join(" + ");
+                      const losers = teamsForDisplay[1-winnerIdx].map(pi => (names[pi]||`P${pi+1}`).slice(0,5)).join(" + ");
+                      if (sixesConfig.stakeType === "cash") {
+                        return <>🏆 <b style={{ color: isLight?"#16a34a":COLORS[0] }}>{winners}</b> wins ${sixesConfig.cashAmount}</>;
+                      } else {
+                        return <>🏆 <b style={{ color: isLight?"#16a34a":COLORS[0] }}>{winners}</b> wins · <span style={{ color: isLight?"#cc0000":"#f87171" }}>{losers}</span> +2 tokens each</>;
+                      }
+                    })()}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {/* Settlement summary */}
+          <div style={{ background: "var(--card)", borderRadius: 8, border: "1px solid var(--border)", padding: 12, marginTop: 12, fontFamily: "'DM Sans', sans-serif" }}>
+            <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 8 }}>SETTLEMENT</div>
+            {sixesConfig.stakeType === "meal" && (
+              <div style={{ fontSize: 11, color: "var(--dim)", marginBottom: 8, fontStyle: "italic" }}>Tokens = shares of meal cost (lower is better)</div>
+            )}
+            {RP.map(i => {
+              const isCash = sixesConfig.stakeType === "cash";
+              const v = isCash ? sixesPlayerDollars[i] : sixesPlayerTokens[i];
+              const display = isCash
+                ? `${v>0?"+$":v<0?"-$":"$"}${Math.abs(v)}`
+                : `${v} token${v===1?"":"s"}`;
+              const col = isCash
+                ? (v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"var(--dim)")
+                : "var(--text)";
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14 }}>
+                  <span style={{ color: isLight?COLORS_LIGHT[i]:COLORS[i], fontWeight: "600" }}>{names[i]||`P${i+1}`}</span>
+                  <span style={{ fontWeight: "700", color: col }}>{display}</span>
+                </div>
+              );
+            })}
+            {/* Total row for meal tokens */}
+            {sixesConfig.stakeType === "meal" && (() => {
+              const total = sixesPlayerTokens.reduce((s, v) => s + v, 0);
+              return (
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)", fontSize: 14 }}>
+                  <span style={{ color: "var(--text)", fontWeight: "700" }}>Total</span>
+                  <span style={{ fontWeight: "700", color: "var(--text)" }}>{total} token{total===1?"":"s"}</span>
+                </div>
+              );
+            })()}
           </div>
         </Sect>
       )}
@@ -3857,7 +4680,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                 <th style={{ ...S.th, padding: "5px 4px" }}>Par</th>
                 <th style={{ ...S.th, padding: "5px 4px", color: "var(--text)" }}>SI</th>
                 {RP.map(i => (
-                  <th key={i} style={{ ...S.th, padding: "5px 3px", fontSize: 13, fontWeight: "700", color: isLight?COLORS_LIGHT[i]:COLORS[i] }}>{names[i].slice(0,5)}</th>
+                  <th key={i} style={{ ...S.th, padding: "5px 3px", fontSize: 13, fontWeight: "700", color: isLight?COLORS_LIGHT[i]:COLORS[i] }}>{(names[i]||"").slice(0,5)}</th>
                 ))}
               </tr>
             </thead>
