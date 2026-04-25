@@ -2682,84 +2682,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   React.useEffect(() => { holeIdxRef.current = holeIdx; }, [holeIdx]);
   React.useEffect(() => { inPlayRef.current = inPlay; }, [inPlay]);
 
-  // Supabase logging — fires after delay to avoid PWA first-launch hang
   const hasLoggedRef = React.useRef(false);
-  // Build the full round payload (used for both 18-hole trigger and explicit save)
-  const buildFullPayload = React.useCallback(() => {
-    const rid = String(roundId);
-    const sgt = new Date().toLocaleString("en-SG", { timeZone: "Asia/Singapore" });
-    const games_str = Object.entries(games).filter(([,v])=>v).map(([k])=>k).join(",");
-    const playersArr = Array.from({ length: N }, (_, i) => ({ name: liveNames[i] || `P${i+1}`, hcp: liveHcps[i] }));
-    return {
-      logBasic: {
-        round_id: rid,
-        course: config.courseName || "Custom",
-        players: liveNames.slice(0, N),
-        hcps: liveHcps.slice(0, N),
-        games: games_str,
-        player_count: N,
-        holes_played: inPlay.filter(Boolean).length,
-        logged_at_sgt: sgt,
-        device_id: getDeviceId(),
-      },
-      logFull: {
-        round_id: rid,
-        logged_at_sgt: sgt,
-        device_id: getDeviceId(),
-        app_version: APP_VERSION,
-        course_name: config.courseName || "Custom",
-        course_holes: holes,
-        player_count: N,
-        players: playersArr,
-        games_enabled: games,
-        game_settings: {
-          vegasVal, ctVal, p3Val, ptsVal,
-          vegasRules: config.vegasRules,
-          hcpCap: config.hcpCap,
-          hcpThreshold: config.hcpThreshold,
-          bankerNett: config.bankerNett,
-          hioRule: config.hioRule,
-        },
-        three_ball_variant: ghostEnabled ? "ghost" : hzEnabled ? "hz" : null,
-        hz_bonus: hzEnabled ? !!config.hzBonus : null,
-        sixes_config: sixesEnabled ? sixesConfig : null,
-        matchups: matchupEnabled ? matchups : null,
-        gross,
-        in_play: inPlay,
-        v_teams: vTeams,
-        banker,
-        p3mult,
-        hz_hero: hzEnabled ? hzHero : null,
-        ghost_gross: ghostEnabled ? ghostGross : null,
-        final_dollars: dollarsTotal,
-        vegas_cum: vegasCum,
-        ct_cum: ctCum,
-        p3_cum: p3Cum,
-        pts_cum: ptsCum,
-        sixes_dollars: sixesEnabled ? sixesPlayerDollars : null,
-        sixes_tokens: sixesEnabled ? sixesPlayerTokens : null,
-        matchup_results: matchupEnabled ? matchupResults : null,
-        adjustments,
-        course_par: holes.reduce((s, h) => s + h.par, 0),
-        total_holes_played: inPlay.filter(Boolean).length,
-        is_complete: inPlay.every(Boolean),
-      },
-    };
-  }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, holes, vegasVal, ctVal, p3Val, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments]);
-  // Log helper — writes to both tables
-  const logRound = React.useCallback(() => {
-    const { logBasic, logFull } = buildFullPayload();
-    const rid = logBasic.round_id;
-    supaUpsert("rounds_log", rid, logBasic);
-    supaUpsert("rounds_full", rid, logFull);
-  }, [buildFullPayload]);
-  // 18-hole auto-trigger
-  React.useEffect(() => {
-    if (hasLoggedRef.current) return;
-    if (!inPlay.every(v => v)) return;
-    hasLoggedRef.current = true;
-    setTimeout(() => { logRound(); }, 3000);
-  }, [inPlay]); // eslint-disable-line react-hooks/exhaustive-deps
   const results = holes.map((h, hi) => {
     const g = gross[hi];
     // Full-group relative HCPs (for scorecard display, 6-point, matchup)
@@ -3003,6 +2926,84 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   }
   const ptsDollarsArr = games.pts && ptsVal > 0 ? players.map(i => players.reduce((sum, j) => j !== i ? sum + (ptsCum[i] - ptsCum[j]) * ptsVal : sum, 0)) : Array(N).fill(0);
   const dollarsTotal = players.map(pi => dollars[pi] + matchupPlayerDollars[pi] + ptsDollarsArr[pi] + (sixesEnabled && sixesConfig.stakeType === "cash" ? sixesPlayerDollars[pi] : 0));
+
+  // Supabase logging — fires after delay to avoid PWA first-launch hang
+  // Build the full round payload (used for both 18-hole trigger and explicit save)
+  const buildFullPayload = React.useCallback(() => {
+    const rid = String(roundId);
+    const sgt = new Date().toLocaleString("en-SG", { timeZone: "Asia/Singapore" });
+    const games_str = Object.entries(games).filter(([,v])=>v).map(([k])=>k).join(",");
+    const playersArr = Array.from({ length: N }, (_, i) => ({ name: liveNames[i] || `P${i+1}`, hcp: liveHcps[i] }));
+    return {
+      logBasic: {
+        round_id: rid,
+        course: config.courseName || "Custom",
+        players: liveNames.slice(0, N),
+        hcps: liveHcps.slice(0, N),
+        games: games_str,
+        player_count: N,
+        holes_played: inPlay.filter(Boolean).length,
+        logged_at_sgt: sgt,
+        device_id: getDeviceId(),
+      },
+      logFull: {
+        round_id: rid,
+        logged_at_sgt: sgt,
+        device_id: getDeviceId(),
+        app_version: APP_VERSION,
+        course_name: config.courseName || "Custom",
+        course_holes: holes,
+        player_count: N,
+        players: playersArr,
+        games_enabled: games,
+        game_settings: {
+          vegasVal, ctVal, p3Val, ptsVal,
+          vegasRules: config.vegasRules,
+          hcpCap: config.hcpCap,
+          hcpThreshold: config.hcpThreshold,
+          bankerNett: config.bankerNett,
+          hioRule: config.hioRule,
+        },
+        three_ball_variant: ghostEnabled ? "ghost" : hzEnabled ? "hz" : null,
+        hz_bonus: hzEnabled ? !!config.hzBonus : null,
+        sixes_config: sixesEnabled ? sixesConfig : null,
+        matchups: matchupEnabled ? matchups : null,
+        gross,
+        in_play: inPlay,
+        v_teams: vTeams,
+        banker,
+        p3mult,
+        hz_hero: hzEnabled ? hzHero : null,
+        ghost_gross: ghostEnabled ? ghostGross : null,
+        final_dollars: dollarsTotal,
+        vegas_cum: vegasCum,
+        ct_cum: ctCum,
+        p3_cum: p3Cum,
+        pts_cum: ptsCum,
+        sixes_dollars: sixesEnabled ? sixesPlayerDollars : null,
+        sixes_tokens: sixesEnabled ? sixesPlayerTokens : null,
+        matchup_results: matchupEnabled ? matchupResults : null,
+        adjustments,
+        course_par: holes.reduce((s, h) => s + h.par, 0),
+        total_holes_played: inPlay.filter(Boolean).length,
+        is_complete: inPlay.every(Boolean),
+      },
+    };
+  }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, holes, vegasVal, ctVal, p3Val, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments, dollarsTotal, dollars, vegasCum, ctCum, p3Cum, ptsCum]);
+  // Log helper — writes to both tables
+  const logRound = React.useCallback(() => {
+    const { logBasic, logFull } = buildFullPayload();
+    const rid = logBasic.round_id;
+    supaUpsert("rounds_log", rid, logBasic);
+    supaUpsert("rounds_full", rid, logFull);
+  }, [buildFullPayload]);
+  // 18-hole auto-trigger
+  React.useEffect(() => {
+    if (hasLoggedRef.current) return;
+    if (!inPlay.every(v => v)) return;
+    hasLoggedRef.current = true;
+    setTimeout(() => { logRound(); }, 3000);
+  }, [inPlay]); // eslint-disable-line react-hooks/exhaustive-deps
   const frontPlayed = inPlay.slice(0,9).filter(Boolean).length;
   const backPlayed = inPlay.slice(9,18).filter(Boolean).length;
   const firstNine = frontPlayed >= backPlayed ? "F" : "B";
