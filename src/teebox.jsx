@@ -2941,6 +2941,18 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     const sgt = new Date().toLocaleString("en-SG", { timeZone: "Asia/Singapore" });
     const games_str = Object.entries(games).filter(([,v])=>v).map(([k])=>k).join(",");
     const playersArr = Array.from({ length: N }, (_, i) => ({ name: liveNames[i] || `P${i+1}`, hcp: liveHcps[i] }));
+    // Round signature for duplicate detection (only for complete rounds)
+    // Format: {first 4 holes' SI}|{sorted player total scores}|{date DD/MM/YYYY}
+    let round_signature = null;
+    if (inPlay.every(Boolean)) {
+      const totalScores = Array.from({ length: N }, (_, i) =>
+        gross.reduce((sum, hole) => sum + (parseInt(hole[i], 10) || 0), 0)
+      );
+      const sortedTotals = [...totalScores].sort((a, b) => a - b).join(",");
+      const siSeq = holes.slice(0, 4).map(h => h.si).join(",");
+      const datePart = new Date().toLocaleDateString("en-GB", { timeZone: "Asia/Singapore" });
+      round_signature = `${siSeq}|${sortedTotals}|${datePart}`;
+    }
     return {
       logBasic: {
         round_id: rid,
@@ -2994,6 +3006,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         course_par: holes.reduce((s, h) => s + h.par, 0),
         total_holes_played: inPlay.filter(Boolean).length,
         is_complete: inPlay.every(Boolean),
+        round_signature,
       },
     };
   }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, holes, vegasVal, ctVal, p3Val, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments, dollarsTotal, dollars, vegasCum, ctCum, p3Cum, ptsCum]);
