@@ -4,6 +4,45 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
+const APP_VERSION = "vw-1.1.2";
+
+// Device ID: persistent random UUID per install. Used to group rounds without auth.
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem("sws_device_id");
+    if (!id) {
+      id = (crypto.randomUUID && crypto.randomUUID()) || ("d-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10));
+      localStorage.setItem("sws_device_id", id);
+    }
+    return id;
+  } catch(_) { return null; }
+}
+
+// Supabase config — anon key, RLS protects table
+const SUPA_URL_BASE = "https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc";
+const SUPA_HDR = { "Content-Type": "application/json", apikey: SUPA_KEY, Authorization: "Bearer " + SUPA_KEY };
+
+// Upsert helper: PATCH first, POST if not exists
+function supaUpsert(table, roundId, payload) {
+  const url = `${SUPA_URL_BASE}/${table}`;
+  return fetch(`${url}?round_id=eq.${roundId}`, {
+    method: "PATCH",
+    headers: { ...SUPA_HDR, Prefer: "return=representation" },
+    body: JSON.stringify(payload),
+  })
+    .then(r => r.json())
+    .then(rows => {
+      if (!rows || rows.length === 0) {
+        return fetch(url, {
+          method: "POST",
+          headers: SUPA_HDR,
+          body: JSON.stringify({ ...payload, round_id: roundId }),
+        });
+      }
+    })
+    .catch(() => {});
+}
 const VEGAS_VAL = 1;
 const CT_VAL = 3;
 const P3_VAL = 5;
@@ -2645,24 +2684,82 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
 
   // Supabase logging — fires after delay to avoid PWA first-launch hang
   const hasLoggedRef = React.useRef(false);
+  // Build the full round payload (used for both 18-hole trigger and explicit save)
+  const buildFullPayload = React.useCallback(() => {
+    const rid = String(roundId);
+    const sgt = new Date().toLocaleString("en-SG", { timeZone: "Asia/Singapore" });
+    const games_str = Object.entries(games).filter(([,v])=>v).map(([k])=>k).join(",");
+    const playersArr = Array.from({ length: N }, (_, i) => ({ name: liveNames[i] || `P${i+1}`, hcp: liveHcps[i] }));
+    return {
+      logBasic: {
+        round_id: rid,
+        course: config.courseName || "Custom",
+        players: liveNames.slice(0, N),
+        hcps: liveHcps.slice(0, N),
+        games: games_str,
+        player_count: N,
+        holes_played: inPlay.filter(Boolean).length,
+        logged_at_sgt: sgt,
+        device_id: getDeviceId(),
+      },
+      logFull: {
+        round_id: rid,
+        logged_at_sgt: sgt,
+        device_id: getDeviceId(),
+        app_version: APP_VERSION,
+        course_name: config.courseName || "Custom",
+        course_holes: holes,
+        player_count: N,
+        players: playersArr,
+        games_enabled: games,
+        game_settings: {
+          vegasVal, ctVal, p3Val, ptsVal,
+          vegasRules: config.vegasRules,
+          hcpCap: config.hcpCap,
+          hcpThreshold: config.hcpThreshold,
+          bankerNett: config.bankerNett,
+          hioRule: config.hioRule,
+        },
+        three_ball_variant: ghostEnabled ? "ghost" : hzEnabled ? "hz" : null,
+        hz_bonus: hzEnabled ? !!config.hzBonus : null,
+        sixes_config: sixesEnabled ? sixesConfig : null,
+        matchups: matchupEnabled ? matchups : null,
+        gross,
+        in_play: inPlay,
+        v_teams: vTeams,
+        banker,
+        p3mult,
+        hz_hero: hzEnabled ? hzHero : null,
+        ghost_gross: ghostEnabled ? ghostGross : null,
+        final_dollars: dollarsTotal,
+        vegas_cum: vegasCum,
+        ct_cum: ctCum,
+        p3_cum: p3Cum,
+        pts_cum: ptsCum,
+        sixes_dollars: sixesEnabled ? sixesPlayerDollars : null,
+        sixes_tokens: sixesEnabled ? sixesPlayerTokens : null,
+        matchup_results: matchupEnabled ? matchupResults : null,
+        adjustments,
+        course_par: holes.reduce((s, h) => s + h.par, 0),
+        total_holes_played: inPlay.filter(Boolean).length,
+        is_complete: inPlay.every(Boolean),
+      },
+    };
+  }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, holes, vegasVal, ctVal, p3Val, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments]);
+  // Log helper — writes to both tables
+  const logRound = React.useCallback(() => {
+    const { logBasic, logFull } = buildFullPayload();
+    const rid = logBasic.round_id;
+    supaUpsert("rounds_log", rid, logBasic);
+    supaUpsert("rounds_full", rid, logFull);
+  }, [buildFullPayload]);
+  // 18-hole auto-trigger
   React.useEffect(() => {
     if (hasLoggedRef.current) return;
     if (!inPlay.every(v => v)) return;
     hasLoggedRef.current = true;
-    setTimeout(() => {
-      const games_str = Object.entries(games).filter(([,v])=>v).map(([k])=>k).join(',');
-      const sgt = new Date().toLocaleString("en-SG", {timeZone: "Asia/Singapore"});
-      const rid = String(roundId);
-      const SUPA_URL = 'https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log';
-      const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc';
-      const SUPA_HDR = { 'Content-Type': 'application/json', 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY };
-      const payload = { round_id: rid, course: config.courseName || 'Custom', players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), games: games_str, player_count: N, holes_played: 18, logged_at_sgt: sgt };
-      fetch(SUPA_URL + '?round_id=eq.' + rid, { method: 'PATCH', headers: { ...SUPA_HDR, 'Prefer': 'return=representation' }, body: JSON.stringify({ players: payload.players, hcps: payload.hcps, holes_played: 18, logged_at_sgt: sgt }) })
-        .then(r => r.json())
-        .then(rows => { if (!rows || rows.length === 0) { fetch(SUPA_URL, { method: 'POST', headers: SUPA_HDR, body: JSON.stringify(payload) }).catch(() => {}); } })
-        .catch(() => {});
-    }, 3000);
-  }, [inPlay]);
+    setTimeout(() => { logRound(); }, 3000);
+  }, [inPlay]); // eslint-disable-line react-hooks/exhaustive-deps
   const results = holes.map((h, hi) => {
     const g = gross[hi];
     // Full-group relative HCPs (for scorecard display, 6-point, matchup)
@@ -3070,7 +3167,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           </div>
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
             {[["hole","HOLE"],["totals","$"]].map(([v,label]) => (
-              <button key={v} className="tab-btn" onClick={() => { setView(v); window.scrollTo(0,0); if (v === "totals") { setTimeout(() => { const games_str = Object.entries(games).filter(([,val])=>val).map(([k])=>k).join(','); const sgt = new Date().toLocaleString('en-SG', {timeZone:'Asia/Singapore'}); const rid = String(roundId); const SUPA_URL = 'https://yfjnxjigvgwzaoyuucex.supabase.co/rest/v1/rounds_log'; const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlmam54amlndmd3emFveXV1Y2V4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0ODcxMDEsImV4cCI6MjA5MjA2MzEwMX0.nA33j2qSxG7uhT8wTFbACYZ1Z8ZGj2nQmFLKvan3NBc'; const SUPA_HDR = { 'Content-Type': 'application/json', 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }; fetch(SUPA_URL + '?round_id=eq.' + rid, { method: 'PATCH', headers: { ...SUPA_HDR, 'Prefer': 'return=representation' }, body: JSON.stringify({ players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), logged_at_sgt: sgt, holes_played: inPlay.filter(Boolean).length }) }).then(r => r.json()).then(rows => { if (!rows || rows.length === 0) { fetch(SUPA_URL, { method: 'POST', headers: SUPA_HDR, body: JSON.stringify({ round_id: rid, course: config.courseName || 'Custom', players: liveNames.slice(0, N), hcps: liveHcps.slice(0, N), games: games_str, player_count: N, logged_at_sgt: sgt, holes_played: inPlay.filter(Boolean).length }) }).catch(() => {}); } }).catch(() => {}); }, 2000); } }}
+              <button key={v} className="tab-btn" onClick={() => { setView(v); window.scrollTo(0,0); if (v === "totals") { setTimeout(() => { logRound(); }, 2000); } }}
                 style={{
                   padding: v==="totals" ? "8px 18px" : "6px 10px",
                   borderRadius: 6,
@@ -3911,6 +4008,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
               onSave(roundData);
               setSaveMsg("Round saved ✓");
               setTimeout(() => setSaveMsg(""), 2500);
+              // Log to Supabase (delayed to not block save UX)
+              setTimeout(() => { logRound(); }, 1500);
             }}
             onExport={() => {
               const roundData = {
