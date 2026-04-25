@@ -1413,7 +1413,13 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               })}
             </div>
             <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => { window.scrollTo(0,0); onLoadRound(importPreview); setImportPreview(null); }}
+              <button onClick={() => { window.scrollTo(0,0); 
+                // Strip _roundId on import — importer gets a fresh round ID for their device
+                const importedConfig = { ...importPreview.config };
+                delete importedConfig._roundId;
+                onLoadRound({ ...importPreview, config: importedConfig });
+                setImportPreview(null);
+              }}
                 style={{ ...S.startBtn, flex: 2, fontSize: 15, padding: "13px" }}>Load Round</button>
               <button onClick={() => setImportPreview(null)}
                 style={{ ...S.startBtn, flex: 1, fontSize: 15, padding: "13px", background: "var(--border)", color: "var(--accent)" }}>Cancel</button>
@@ -2423,6 +2429,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               ptsVal,
               courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
               _savedScores: savedScores || null,
+              _roundId: sc?._roundId || null,
             });
             window.scrollTo(0, 0);
           }}>
