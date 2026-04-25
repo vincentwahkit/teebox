@@ -130,6 +130,15 @@ const SUKAJADI_HOLES = [
   {par:4,si:1},{par:5,si:7},
 ];
 
+// Warren Country Club, Singapore — Par 71
+const WARREN_HOLES = [
+  {par:4,si:5},{par:5,si:7},{par:4,si:1},{par:3,si:11},
+  {par:4,si:15},{par:4,si:17},{par:3,si:9},{par:5,si:13},
+  {par:4,si:3},{par:4,si:16},{par:3,si:14},{par:4,si:8},
+  {par:5,si:2},{par:3,si:12},{par:5,si:6},{par:3,si:18},
+  {par:4,si:10},{par:4,si:4},
+];
+
 const PRESET_COURSES = [
   { id: "laguna-classic", name: "Laguna National", tee: "Classic (Blue)", holes: LAGUNA_CLASSIC_HOLES },
   { id: "laguna-masters", name: "Laguna National", tee: "Masters (Blue)", holes: LAGUNA_MASTERS_HOLES },
@@ -144,6 +153,7 @@ const PRESET_COURSES = [
   { id: "palm-springs-pi", name: "Palm Springs", tee: "Palm+Island (Blue)", holes: PALM_SPRINGS_PALM_ISLAND },
   { id: "sukajadi", name: "Sukajadi", tee: "Batam", holes: SUKAJADI_HOLES },
   { id: "ponderosa", name: "Ponderosa G&CC", tee: "Blue", holes: PONDEROSA_HOLES },
+  { id: "warren", name: "Warren CC", tee: "Blue", holes: WARREN_HOLES },
 ];
 
 // PURE COMPUTATION
@@ -1020,6 +1030,9 @@ function SplashContent({ onDone, isLight }) {
 // SETUP
 function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound }) {
   const sc = savedConfig; // shorthand
+  // Round is "in progress" when at least one hole has been played (toggled In Play).
+  // Used to lock player count + lineup reorder to prevent score corruption.
+  const roundInProgress = !!(savedScores?.inPlay?.some?.(p => p));
   const [playerCount, setPlayerCount] = useState(() => {
     if (sc) return sc.playerCount || 4;
     try { return parseInt(localStorage.getItem("sws_playercount") || "4"); } catch { return 4; }
@@ -1396,7 +1409,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               <span style={{ fontSize: 20 }}>♻️</span>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: "700", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>Scores preserved</div>
-                <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Change settings then START ROUND</div>
+                <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{roundInProgress ? "Change settings then START ROUND. Lineup order locked." : "Change settings then START ROUND."}</div>
               </div>
               <button onClick={() => onNewRound && onNewRound()}
                 style={{ background: "#3a1a1a", color: "var(--neg)", border: "1px solid #5a2a2a", borderRadius: 8, fontSize: 13, padding: "6px 10px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -1412,13 +1425,6 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 {[1,2,3,4,5,6].map(n => (
                   <button key={n} onClick={() => {
                     setPlayerCount(n);
-                    setNames(prev => {
-                      const updated = [...prev];
-                      for (let i = 0; i < n; i++) {
-                      if (!updated[i] || !updated[i].trim()) updated[i] = `P${i+1}`;
-                      }
-                      return updated;
-                    });
                     try { localStorage.setItem("sws_playercount", String(n)); } catch(_) {}
                   }} style={{ width: 40, height: 40, borderRadius: 8, cursor: "pointer", fontSize: 16, fontWeight: "700",
                     border: `1px solid ${playerCount===n?"var(--accent)":"var(--border)"}`,
@@ -1432,27 +1438,29 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             </div>
             {Array.from({length: playerCount}, (_,i) => (
               <div key={i} style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center" }}>
-                {/* Reorder arrows */}
+                {/* Reorder arrows — disabled mid-round to prevent score corruption */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }}>
                   <button onClick={() => {
-                    if (i === 0) return;
+                    if (i === 0 || roundInProgress) return;
                     const n=[...names], h=[...hcps];
                     [n[i], n[i-1]] = [n[i-1], n[i]];
                     [h[i], h[i-1]] = [h[i-1], h[i]];
                     setNames(n); setHcps(h);
                     try { localStorage.setItem("sws_names", JSON.stringify(n)); localStorage.setItem("sws_hcps", JSON.stringify(h)); } catch(_) {}
-                  }} style={{ width: 28, height: 24, background: i===0?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 4, color: i===0?"#2a4a2a":COLORS[0], cursor: i===0?"default":"pointer", fontSize: 13 }}>↑</button>
+                  }} disabled={roundInProgress ? true : false}
+                  style={{ width: 28, height: 24, background: (i===0||roundInProgress)?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 4, color: (i===0||roundInProgress)?"#2a4a2a":COLORS[0], cursor: (i===0||roundInProgress)?"default":"pointer", fontSize: 13, opacity: roundInProgress?0.4:1 }}>↑</button>
                   <button onClick={() => {
-                    if (i === playerCount-1) return;
+                    if (i === playerCount-1 || roundInProgress) return;
                     const n=[...names], h=[...hcps];
                     [n[i], n[i+1]] = [n[i+1], n[i]];
                     [h[i], h[i+1]] = [h[i+1], h[i]];
                     setNames(n); setHcps(h);
                     try { localStorage.setItem("sws_names", JSON.stringify(n)); localStorage.setItem("sws_hcps", JSON.stringify(h)); } catch(_) {}
-                  }} style={{ width: 28, height: 24, background: i===playerCount-1?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 4, color: i===playerCount-1?"#2a4a2a":COLORS[0], cursor: i===playerCount-1?"default":"pointer", fontSize: 13 }}>↓</button>
+                  }} disabled={roundInProgress ? true : false}
+                  style={{ width: 28, height: 24, background: (i===playerCount-1||roundInProgress)?"#0d1a0d":"#1e3a1e", border: "none", borderRadius: 4, color: (i===playerCount-1||roundInProgress)?"#2a4a2a":COLORS[0], cursor: (i===playerCount-1||roundInProgress)?"default":"pointer", fontSize: 13, opacity: roundInProgress?0.4:1 }}>↓</button>
                 </div>
                 <div style={{ ...S.dot, background: isLight ? COLORS_LIGHT[i] : COLORS[i], fontFamily: "'Bebas Neue', sans-serif", fontSize: 16, flexShrink: 0 }}>{i+1}</div>
-                <input value={names[i]||`P${i+1}`} placeholder={`Player ${i+1}`}
+                <input value={names[i]||""} placeholder={`Player ${i+1}`}
                   style={{ ...S.inp, flex: 1, minWidth: 0, fontSize: 16, padding: "11px 10px" }}
                   onChange={e => { const n=[...names]; n[i]=e.target.value; setNames(n); try { localStorage.setItem("sws_names", JSON.stringify(n)); } catch(_){} }} />
                 <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
@@ -2481,7 +2489,19 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     );
     return consistent ? savedVT : defaultVT;
   });
-  const [banker, setBanker] = useState(() => savedScores?.banker || saved?.banker || Array(18).fill(0));
+  const [banker, setBanker] = useState(() => {
+    if (savedScores?.banker || saved?.banker) return savedScores?.banker || saved?.banker;
+    // Default: cycle banker through players in lineup order across par-3 holes
+    const par3Holes = holes.map((h, hi) => h.par === 3 ? hi : -1).filter(hi => hi >= 0);
+    const initial = Array(18).fill(0);
+    const playersForBanker = (config.vegasPlayers || [0,1,2,3]).filter(i => i < N).slice(0, 4);
+    const groupSize = playersForBanker.length || N;
+    par3Holes.forEach((hi, idx) => {
+      const playerIdx = playersForBanker[idx % groupSize] ?? (idx % groupSize);
+      initial[hi] = playerIdx;
+    });
+    return initial;
+  });
   const [p3mult, setP3mult] = useState(() => {
     const savedP3 = savedScores?.p3mult || saved?.p3mult;
     if (savedP3) {
