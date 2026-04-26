@@ -2460,7 +2460,7 @@ function QRCodeDisplay({ payload, size = 300 }) {
     if (!loaded || !payload || !divRef.current) return;
     divRef.current.innerHTML = '';
     try {
-      const qr = window.qrcode(0, 'M'); // type 0 = auto version, M = better scan reliability
+      const qr = window.qrcode(0, 'M');
       qr.addData(payload);
       qr.make();
       const moduleCount = qr.getModuleCount();
@@ -2474,6 +2474,670 @@ function QRCodeDisplay({ payload, size = 300 }) {
     <div style={{display:'inline-block',background:'#fff',padding:8,borderRadius:8}}>
       <div ref={divRef}/>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QR PAYLOAD DECODER (for Verify modal — inverse of buildQRPayload)
+// ─────────────────────────────────────────────────────────────────────────────
+function decodeQRPayload(str) {
+  try {
+    const clean = str.trim();
+    const parsed = JSON.parse(clean);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (!parsed.ho || !parsed.sf || !parsed.p) return null;
+    const N = parsed.p.length;
+    const holes = [];
+    for (let i = 0; i < 36; i += 2) holes.push({ par: parsed.ho[i], si: parsed.ho[i+1] });
+    const scores = [];
+    for (let h = 0; h < 18; h++) scores.push(parsed.sf.slice(h*N, h*N+N));
+    const inPlay = [];
+    for (let j = 0; j < 18; j++) inPlay.push(!!(parsed.ip & (1<<j)));
+    const vt = Array.isArray(parsed.vt) && parsed.vt.length > 0 ? parsed.vt : null;
+    return {
+      v: parsed.v,
+      courseName: parsed.c,
+      date: parsed.d,
+      names: parsed.p,
+      hcps: parsed.h || [],
+      holes,
+      scores,
+      inPlay,
+      vTeams: vt,
+      games: parsed.g || {},
+      stakes: parsed.st || {},
+      dollars: parsed.dl || [],
+      firstNine: parsed.fn || "F",
+      nassau: parsed.nassau || [],
+    };
+  } catch(e) { return null; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PLAYER MATCHING — fuzzy name + score similarity
+// ─────────────────────────────────────────────────────────────────────────────
+function normalizeName(s) {
+  return (s || "").toLowerCase().trim().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ");
+}
+function initialsOf(name) {
+  const norm = normalizeName(name);
+  if (!norm) return "";
+  // If single word, take first 2 chars; if multi, first letter of each word
+  const parts = norm.split(" ");
+  if (parts.length === 1) return parts[0].slice(0, 2);
+  return parts.map(p => p[0]).join("");
+}
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a) return b.length;
+  if (!b) return a.length;
+  const m = [];
+  for (let i = 0; i <= b.length; i++) m[i] = [i];
+  for (let j = 0; j <= a.length; j++) m[0][j] = j;
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b[i-1] === a[j-1]) m[i][j] = m[i-1][j-1];
+      else m[i][j] = Math.min(m[i-1][j-1] + 1, m[i][j-1] + 1, m[i-1][j] + 1);
+    }
+  }
+  return m[b.length][a.length];
+}
+function fuzzyNameScore(a, b) {
+  if (!a || !b) return 0;
+  const na = normalizeName(a), nb = normalizeName(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1.0;
+  // Substring
+  if (na.length >= 2 && nb.length >= 2) {
+    if (na.includes(nb) || nb.includes(na)) return 0.85;
+  }
+  // Initials match
+  const ia = initialsOf(a), ib = initialsOf(b);
+  if (ia.length >= 2 && ib.length >= 2 && (ia === ib || ia === nb || ib === na)) return 0.75;
+  // Compare initials of one to other (e.g. "VW" vs "Vince Wong")
+  if (ia === nb || ib === na) return 0.75;
+  // Levenshtein ratio
+  const dist = levenshtein(na, nb);
+  const maxLen = Math.max(na.length, nb.length);
+  const ratio = 1 - dist / maxLen;
+  if (ratio >= 0.5) return Math.min(0.7, ratio);
+  // Same first letter
+  if (na[0] === nb[0]) return 0.3;
+  return 0;
+}
+function fuzzyScoreMatch(scoresA, scoresB, inPlayA, inPlayB) {
+  let played = 0, diffs = 0;
+  for (let h = 0; h < 18; h++) {
+    if (!inPlayA[h] || !inPlayB[h]) continue;
+    played++;
+    if (scoresA[h] !== scoresB[h]) diffs++;
+  }
+  if (played === 0) return null;
+  return (played - diffs) / played;
+}
+// Returns combined score 0..1, weight adapts to holes played
+function combinedScore(nameSim, scoreSim, holesPlayed) {
+  if (scoreSim === null || holesPlayed < 2) return nameSim;
+  const wScore = Math.min(0.8, 0.2 + holesPlayed * 0.06); // ramps 0.2 → 0.8 over 10 holes
+  const wName = 1 - wScore;
+  return wName * nameSim + wScore * scoreSim;
+}
+// Find best 1-to-1 assignment via brute force (N! permutations, fine for N<=6)
+function bestAssignment(local, scanned) {
+  const localPlayers = (local.names || []).map((name, i) => ({
+    idx: i,
+    name,
+    scores: (local.scores || []).map(row => row?.[i] ?? 0),
+  }));
+  const scannedPlayers = (scanned.names || []).map((name, i) => ({
+    idx: i,
+    name,
+    scores: (scanned.scores || []).map(row => row?.[i] ?? 0),
+  }));
+  const N_local = localPlayers.length;
+  const N_scanned = scannedPlayers.length;
+  // Build score matrix: combined[i][j] = score of matching localPlayers[i] to scannedPlayers[j]
+  const matrix = [];
+  const sharedHoles = (local.inPlay || []).reduce((acc, v, i) => acc + (v && (scanned.inPlay || [])[i] ? 1 : 0), 0);
+  for (let i = 0; i < N_local; i++) {
+    matrix[i] = [];
+    for (let j = 0; j < N_scanned; j++) {
+      const nameSim = fuzzyNameScore(localPlayers[i].name, scannedPlayers[j].name);
+      const scoreSim = fuzzyScoreMatch(localPlayers[i].scores, scannedPlayers[j].scores, local.inPlay, scanned.inPlay);
+      matrix[i][j] = combinedScore(nameSim, scoreSim, sharedHoles);
+    }
+  }
+  // Brute-force permutations of scanned indices for assignment
+  const N = Math.max(N_local, N_scanned);
+  const indices = Array.from({ length: N_scanned }, (_, k) => k);
+  function* permutations(arr) {
+    if (arr.length <= 1) { yield arr; return; }
+    for (let i = 0; i < arr.length; i++) {
+      const rest = arr.slice(0, i).concat(arr.slice(i + 1));
+      for (const p of permutations(rest)) yield [arr[i], ...p];
+    }
+  }
+  let best = { perm: null, total: -1, perPair: [] };
+  // For each ordering of scanned players
+  for (const perm of permutations(indices)) {
+    let total = 0;
+    const perPair = [];
+    for (let i = 0; i < Math.min(N_local, perm.length); i++) {
+      const j = perm[i];
+      const score = matrix[i][j];
+      total += score;
+      perPair.push({ localIdx: i, scannedIdx: j, score });
+    }
+    if (total > best.total) best = { perm, total, perPair };
+  }
+  // Calculate confidence: min individual score among matched pairs
+  const matched = best.perPair.filter(p => p.score > 0);
+  const minScore = matched.length > 0 ? Math.min(...matched.map(p => p.score)) : 0;
+  const avgScore = matched.length > 0 ? best.total / matched.length : 0;
+  // Build mapping: { localName: scannedName }
+  const mapping = {};
+  best.perPair.forEach(p => {
+    if (p.score > 0.5) {
+      mapping[localPlayers[p.localIdx].name] = scannedPlayers[p.scannedIdx].name;
+    }
+  });
+  return {
+    mapping,
+    perPair: best.perPair.map(p => ({
+      localName: localPlayers[p.localIdx].name,
+      scannedName: scannedPlayers[p.scannedIdx]?.name || null,
+      score: p.score,
+    })),
+    minScore,
+    avgScore,
+    sharedHoles,
+    confidence: minScore >= 0.8 ? "high" : minScore >= 0.5 ? "medium" : "low",
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMPARE TWO ROUND PAYLOADS — returns array of {label, ok, detail}
+// Takes an explicit name mapping: { localName -> scannedName }
+// ─────────────────────────────────────────────────────────────────────────────
+function compareRounds(local, scanned, mapping) {
+  const checks = [];
+  // Course (compare SI sequences for first 4 holes)
+  const localSI = (local.holes || []).slice(0, 4).map(h => h.si).join(",");
+  const scannedSI = (scanned.holes || []).slice(0, 4).map(h => h.si).join(",");
+  checks.push({
+    label: "Course",
+    ok: localSI === scannedSI,
+    detail: localSI === scannedSI ? local.courseName : `You: ${local.courseName} (${localSI})\nThem: ${scanned.courseName} (${scannedSI})`,
+  });
+
+  // Players — based on mapping
+  const localNames = local.names || [];
+  const scannedNames = scanned.names || [];
+  const mappedLocal = Object.keys(mapping || {});
+  const mappedScanned = Object.values(mapping || {});
+  const unmappedLocal = localNames.filter(n => !mappedLocal.includes(n));
+  const unmappedScanned = scannedNames.filter(n => !mappedScanned.includes(n));
+  const playersOk = unmappedLocal.length === 0 && unmappedScanned.length === 0;
+  let playerDetail;
+  if (mappedLocal.length === 0) {
+    playerDetail = "No matching players found.";
+  } else if (playersOk) {
+    playerDetail = mappedLocal.map(n => mapping[n] === n ? n : `${n} ↔ ${mapping[n]}`).join(", ");
+  } else {
+    const lines = [];
+    lines.push("Matched: " + (mappedLocal.length > 0 ? mappedLocal.map(n => mapping[n] === n ? n : `${n}↔${mapping[n]}`).join(", ") : "none"));
+    if (unmappedLocal.length) lines.push(`Only on you: ${unmappedLocal.join(", ")}`);
+    if (unmappedScanned.length) lines.push(`Only on them: ${unmappedScanned.join(", ")}`);
+    playerDetail = lines.join("\n");
+  }
+  checks.push({ label: "Players", ok: playersOk, detail: playerDetail });
+
+  // Build name → index maps
+  const localIdx = {}; localNames.forEach((n, i) => { localIdx[n] = i; });
+  const scannedIdx = {}; scannedNames.forEach((n, i) => { scannedIdx[n] = i; });
+
+  // In-play holes
+  const ipDiff = [];
+  for (let i = 0; i < 18; i++) {
+    if (!!local.inPlay[i] !== !!scanned.inPlay[i]) ipDiff.push(i + 1);
+  }
+  checks.push({
+    label: "Holes In Play",
+    ok: ipDiff.length === 0,
+    detail: ipDiff.length === 0
+      ? `${local.inPlay.filter(Boolean).length} of 18 in play`
+      : `Differ at hole(s): ${ipDiff.join(", ")}`,
+  });
+
+  // Gross scores — compare hole by hole, only mapped players, only where both have inPlay
+  const scoreDiffs = [];
+  for (let h = 0; h < 18; h++) {
+    if (!local.inPlay[h] || !scanned.inPlay[h]) continue;
+    mappedLocal.forEach(localName => {
+      const scannedName = mapping[localName];
+      const ai = localIdx[localName];
+      const bi = scannedIdx[scannedName];
+      const a = local.scores[h]?.[ai];
+      const b = scanned.scores[h]?.[bi];
+      if (a !== b) {
+        const label = localName === scannedName ? localName : `${localName}↔${scannedName}`;
+        scoreDiffs.push(`H${h+1} ${label}: you ${a}, them ${b}`);
+      }
+    });
+  }
+  checks.push({
+    label: "Scores",
+    ok: scoreDiffs.length === 0,
+    detail: scoreDiffs.length === 0
+      ? (mappedLocal.length > 0 ? `All in-play scores match` : "No matched players to compare")
+      : scoreDiffs.slice(0, 8).join("\n") + (scoreDiffs.length > 8 ? `\n…+${scoreDiffs.length - 8} more` : ""),
+  });
+
+  // Final $
+  const dollarDiffs = [];
+  mappedLocal.forEach(localName => {
+    const scannedName = mapping[localName];
+    const ai = localIdx[localName];
+    const bi = scannedIdx[scannedName];
+    const a = (local.dollars || [])[ai];
+    const b = (scanned.dollars || [])[bi];
+    if (a !== b) {
+      const label = localName === scannedName ? localName : `${localName}↔${scannedName}`;
+      dollarDiffs.push(`${label}: you ${a >= 0 ? "+" : ""}${a}, them ${b >= 0 ? "+" : ""}${b}`);
+    }
+  });
+  checks.push({
+    label: "Final $",
+    ok: dollarDiffs.length === 0,
+    detail: dollarDiffs.length === 0
+      ? (mappedLocal.length > 0
+          ? mappedLocal.map(n => `${n} ${((local.dollars || [])[localIdx[n]] >= 0 ? "+" : "")}${(local.dollars || [])[localIdx[n]]}`).join(" · ")
+          : "No matched players to compare")
+      : dollarDiffs.join("\n"),
+  });
+
+  return checks;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// VERIFY MODAL — paste/upload another phone's payload and compare
+// ─────────────────────────────────────────────────────────────────────────────
+function VerifyModal({ localPayload, roundId, onClose, isLight }) {
+  const [pasted, setPasted] = React.useState("");
+  const [scanned, setScanned] = React.useState(null);  // decoded scanned payload
+  const [matchInfo, setMatchInfo] = React.useState(null); // result of bestAssignment
+  const [confirmedMapping, setConfirmedMapping] = React.useState(null); // user-confirmed name mapping
+  const [comparison, setComparison] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const fileRef = React.useRef(null);
+
+  const localDecoded = React.useMemo(() => decodeQRPayload(localPayload), [localPayload]);
+
+  function processPayload(payloadStr) {
+    setError("");
+    const decoded = decodeQRPayload(payloadStr);
+    if (!decoded) { setError("Could not decode payload. Check format."); return; }
+    if (!localDecoded) { setError("Local payload invalid."); return; }
+    // SANITY CHECKS — stop if scanned QR looks fundamentally different
+    // 1. Course check (SI sequence over first 4 holes)
+    const localSI = (localDecoded.holes || []).slice(0, 4).map(h => h.si).join(",");
+    const scannedSI = (decoded.holes || []).slice(0, 4).map(h => h.si).join(",");
+    if (localSI && scannedSI && localSI !== scannedSI) {
+      setError(`Different course detected.\nYou: ${localDecoded.courseName} (SI ${localSI})\nThem: ${decoded.courseName} (SI ${scannedSI})\n\nThis QR appears to be from a different round.`);
+      return;
+    }
+    // 2. Date check — warn if dates differ (but allow continue)
+    if (localDecoded.date && decoded.date && localDecoded.date !== decoded.date) {
+      const fmt = d => d ? `${d.slice(6,8)}/${d.slice(4,6)}/${d.slice(0,4)}` : "?";
+      setError(`Date mismatch — likely a different round.\nYou: ${fmt(localDecoded.date)}\nThem: ${fmt(decoded.date)}\n\nThis QR appears to be from a different round.`);
+      return;
+    }
+    // 3. Player overlap check — try matching, abort if no plausible matches
+    const match = bestAssignment(localDecoded, decoded);
+    const anyPlausible = match.perPair.some(p => p.score >= 0.3);
+    if (!anyPlausible) {
+      setError(`No matching players found between the two rounds.\nYou: ${(localDecoded.names || []).join(", ")}\nThem: ${(decoded.names || []).join(", ")}\n\nThis QR appears to be from a different group.`);
+      return;
+    }
+    // Cache key incorporates scanned names so different other-phones get fresh matching
+    const scannedNamesKey = (decoded.names || []).join("|");
+    const cacheKey = `tb_verify_matches:${roundId}:${scannedNamesKey}`;
+    let cachedMapping = null;
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) cachedMapping = JSON.parse(raw);
+    } catch(_) {}
+    setScanned(decoded);
+    setMatchInfo(match);
+    // Validate cached mapping — every value in mapping must exist in scanned names
+    let cacheValid = false;
+    if (cachedMapping && Object.keys(cachedMapping).length > 0) {
+      const scannedSet = new Set(decoded.names || []);
+      cacheValid = Object.values(cachedMapping).every(v => scannedSet.has(v));
+    }
+    // If cached and valid → use it
+    if (cacheValid) {
+      setConfirmedMapping(cachedMapping);
+      setComparison(compareRounds(localDecoded, decoded, cachedMapping));
+    } else if (match.confidence === "high") {
+      // High confidence → auto-apply
+      setConfirmedMapping(match.mapping);
+      setComparison(compareRounds(localDecoded, decoded, match.mapping));
+      try { localStorage.setItem(cacheKey, JSON.stringify(match.mapping)); } catch(_) {}
+    }
+    // Otherwise: matchInfo is set, render shows match-confirm UI
+  }
+
+  function applyConfirmedMapping(mapping) {
+    setConfirmedMapping(mapping);
+    setComparison(compareRounds(localDecoded, scanned, mapping));
+    // Cache it (keyed by roundId + scanned names)
+    const scannedNamesKey = (scanned.names || []).join("|");
+    const cacheKey = `tb_verify_matches:${roundId}:${scannedNamesKey}`;
+    try { localStorage.setItem(cacheKey, JSON.stringify(mapping)); } catch(_) {}
+  }
+
+  function rematch() {
+    // Clear cache for current scanned, return to match-confirm UI
+    if (scanned) {
+      const scannedNamesKey = (scanned.names || []).join("|");
+      const cacheKey = `tb_verify_matches:${roundId}:${scannedNamesKey}`;
+      try { localStorage.removeItem(cacheKey); } catch(_) {}
+    }
+    setConfirmedMapping(null);
+    setComparison(null);
+  }
+
+  function reset() {
+    setScanned(null);
+    setMatchInfo(null);
+    setConfirmedMapping(null);
+    setComparison(null);
+    setPasted("");
+    setError("");
+  }
+
+  async function onPhotoSelected(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError("Decoding image…");
+    try {
+      // Load jsQR if needed
+      if (!window.jsQR) {
+        await new Promise((res, rej) => {
+          const s = document.createElement("script");
+          s.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+          s.onload = res;
+          s.onerror = () => rej(new Error("Failed to load jsQR library"));
+          document.head.appendChild(s);
+        });
+      }
+      // Read file as data URL (more reliable than createObjectURL on iOS)
+      const dataUrl = await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = () => res(reader.result);
+        reader.onerror = () => rej(new Error("Could not read file: " + (reader.error?.message || "unknown")));
+        reader.readAsDataURL(file);
+      });
+      // Load into Image
+      const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = () => rej(new Error("Could not load image. iOS HEIC photos may not be supported — try a screenshot or PNG/JPG."));
+        i.src = dataUrl;
+      });
+      if (!img.naturalWidth || !img.naturalHeight) {
+        throw new Error("Image has zero dimensions");
+      }
+      // Limit canvas size to avoid memory issues on big iOS photos
+      const MAX_DIM = 2000;
+      let w = img.naturalWidth, h = img.naturalHeight;
+      if (w > MAX_DIM || h > MAX_DIM) {
+        const scale = MAX_DIM / Math.max(w, h);
+        w = Math.floor(w * scale);
+        h = Math.floor(h * scale);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const code = window.jsQR(imageData.data, imageData.width, imageData.height);
+      if (!code || !code.data) {
+        setError("No QR code found in image. Try a clearer photo, or paste the payload text instead.");
+        return;
+      }
+      setPasted(code.data);
+      processPayload(code.data);
+    } catch(err) {
+      const msg = err?.message || (typeof err === "string" ? err : JSON.stringify(err)) || "unknown error";
+      setError("Image decode error: " + msg);
+    }
+  }
+
+  // STAGE: input (paste/upload) | match-confirm | comparison
+  let stage = "input";
+  if (comparison) stage = "comparison";
+  else if (matchInfo && !confirmedMapping) stage = "match-confirm";
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+    }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 12,
+        maxWidth: 520, width: "100%", maxHeight: "90vh",
+        display: "flex", flexDirection: "column",
+        fontFamily: "'DM Sans', sans-serif",
+      }}>
+        {/* Fixed header */}
+        <div style={{
+          padding: "16px 20px 12px",
+          borderBottom: "1px solid var(--border)",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+        }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text)" }}>Verify ↔</div>
+          <button onClick={onClose} style={{
+            background: "transparent", border: "none", color: "var(--text)", fontSize: 22, cursor: "pointer", padding: 0
+          }}>×</button>
+        </div>
+
+        {/* Scrollable middle */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+          {stage === "input" && (
+            <>
+              <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 12 }}>
+                Paste another phone's payload below, or upload a photo of their QR.
+              </div>
+              <button onClick={() => fileRef.current?.click()} style={{
+                width: "100%", padding: "12px", marginBottom: 10, fontSize: 14,
+                borderRadius: 8, border: "1px solid var(--border)", background: "var(--card)",
+                color: "var(--text)", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+              }}>📷 Upload QR photo</button>
+              <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={onPhotoSelected}/>
+
+              <div style={{ fontSize: 11, color: "var(--text)", letterSpacing: 1, marginBottom: 4 }}>OR PASTE PAYLOAD</div>
+              <textarea
+                value={pasted}
+                onChange={e => setPasted(e.target.value)}
+                placeholder='{"v":"1","c":"...","p":[...],...}'
+                style={{
+                  width: "100%", padding: 10, fontSize: 16, borderRadius: 6, fontFamily: "monospace",
+                  background: "var(--input)", border: "1px solid var(--border)", color: "var(--text)",
+                  boxSizing: "border-box", minHeight: 90, resize: "vertical",
+                }}/>
+              <button onClick={() => processPayload(pasted)} disabled={!pasted.trim()} style={{
+                width: "100%", padding: "10px", marginTop: 8, fontSize: 14, fontWeight: 700,
+                borderRadius: 6, border: "1px solid var(--text)", background: "var(--text)", color: "var(--bg)",
+                cursor: pasted.trim() ? "pointer" : "default", opacity: pasted.trim() ? 1 : 0.4,
+                fontFamily: "'DM Sans', sans-serif",
+              }}>Compare</button>
+              {error && (
+                <div style={{ marginTop: 12, padding: 10, fontSize: 12, color: "#f87171",
+                  background: "var(--card)", border: "1px solid #5a2a2a", borderRadius: 6 }}>{error}</div>
+              )}
+            </>
+          )}
+
+          {stage === "match-confirm" && (
+            <MatchConfirm
+              local={localDecoded}
+              scanned={scanned}
+              matchInfo={matchInfo}
+              onConfirm={applyConfirmedMapping}
+              onCancel={reset}
+            />
+          )}
+
+          {stage === "comparison" && (
+            <>
+              {confirmedMapping && Object.keys(confirmedMapping).length > 0 && (
+                <div style={{ marginBottom: 12, padding: 10,
+                  background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text)" }}>Player matches</div>
+                    <button onClick={rematch} style={{
+                      padding: "3px 8px", fontSize: 10,
+                      borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text)",
+                      cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                    }}>Re-match</button>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text)" }}>{Object.entries(confirmedMapping).map(([k, v]) => k === v ? k : `${k} ↔ ${v}`).join(" · ")}</div>
+                </div>
+              )}
+              {comparison.map((c, i) => (
+                <div key={i} style={{
+                  background: "var(--card)",
+                  border: `1px solid ${c.ok ? "var(--accent)" : "#5a2a2a"}`,
+                  borderRadius: 8, padding: 12, marginBottom: 8,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 18, color: c.ok ? "var(--accent)" : "#f87171" }}>
+                      {c.ok ? "✓" : "✗"}
+                    </span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)" }}>{c.label}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text)", whiteSpace: "pre-wrap", paddingLeft: 26 }}>
+                    {c.detail}
+                  </div>
+                </div>
+              ))}
+              <button onClick={reset} style={{
+                width: "100%", padding: "10px", marginTop: 8, fontSize: 13,
+                borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text)",
+                cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+              }}>Compare another</button>
+            </>
+          )}
+        </div>
+
+        {/* Fixed footer */}
+        <div style={{ padding: "12px 20px", borderTop: "1px solid var(--border)" }}>
+          <button onClick={onClose} style={{
+            width: "100%", padding: "10px 0", borderRadius: 6, fontSize: 13, cursor: "pointer",
+            border: "1px solid var(--text)", background: "var(--text)", color: "var(--bg)", fontWeight: 700,
+            fontFamily: "'DM Sans', sans-serif",
+          }}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MATCH CONFIRM UI — shown when auto-matching needs human verification
+// ─────────────────────────────────────────────────────────────────────────────
+function MatchConfirm({ local, scanned, matchInfo, onConfirm, onCancel }) {
+  // Pre-fill confident pairs (score >= 0.8), require manual for the rest
+  const initialMapping = {};
+  matchInfo.perPair.forEach(p => {
+    if (p.score >= 0.8) initialMapping[p.localName] = p.scannedName;
+  });
+  const [mapping, setMapping] = React.useState(initialMapping);
+
+  const localNames = local.names || [];
+  const scannedNames = scanned.names || [];
+  const usedScanned = new Set(Object.values(mapping));
+  const allMapped = localNames.every(n => mapping[n]);
+
+  function setMatch(localName, scannedName) {
+    setMapping(m => {
+      const next = { ...m };
+      // If this scannedName was already mapped to another local, clear that
+      Object.keys(next).forEach(k => { if (next[k] === scannedName) delete next[k]; });
+      if (scannedName === null) delete next[localName];
+      else next[localName] = scannedName;
+      return next;
+    });
+  }
+
+  return (
+    <>
+      <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 12 }}>
+        Match the players. {matchInfo.sharedHoles > 0 ? `Auto-suggestions based on names + ${matchInfo.sharedHoles} holes of scores.` : "Auto-suggestions based on names."}
+      </div>
+
+      {localNames.map(localName => {
+        const currentMatch = mapping[localName];
+        const suggestion = matchInfo.perPair.find(p => p.localName === localName);
+        const score = suggestion?.score || 0;
+        const confidence = score >= 0.8 ? "high" : score >= 0.5 ? "medium" : "low";
+        return (
+          <div key={localName} style={{
+            background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8,
+            padding: 12, marginBottom: 8,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", flex: 1 }}>{localName}</span>
+              <span style={{ fontSize: 16, color: "var(--text)" }}>↔</span>
+              <span style={{ fontSize: 13, color: currentMatch ? "var(--text)" : "var(--dim)", fontStyle: currentMatch ? "normal" : "italic", flex: 1, textAlign: "right" }}>
+                {currentMatch || "—"}
+              </span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+              {scannedNames.map(scannedName => {
+                const isCurrent = currentMatch === scannedName;
+                const isUsedElsewhere = !isCurrent && usedScanned.has(scannedName);
+                const isSuggested = suggestion?.scannedName === scannedName && score >= 0.5;
+                return (
+                  <button key={scannedName} onClick={() => setMatch(localName, isCurrent ? null : scannedName)}
+                    disabled={isUsedElsewhere}
+                    style={{
+                      fontSize: 11, padding: "4px 8px", borderRadius: 4, cursor: isUsedElsewhere ? "default" : "pointer",
+                      border: `1px solid ${isCurrent ? "var(--accent)" : isSuggested ? "var(--border2)" : "var(--border)"}`,
+                      background: isCurrent ? "var(--accent)" : "transparent",
+                      color: isCurrent ? "#0a1a0a" : "var(--text)",
+                      fontWeight: isCurrent ? 700 : 500,
+                      opacity: isUsedElsewhere ? 0.3 : 1,
+                      fontFamily: "'DM Sans', sans-serif",
+                    }}>
+                    {isSuggested && !isCurrent && "✨ "}{scannedName}
+                  </button>
+                );
+              })}
+              <button onClick={() => setMatch(localName, null)} style={{
+                fontSize: 11, padding: "4px 8px", borderRadius: 4, cursor: "pointer",
+                border: "1px dashed var(--border)", background: "transparent", color: "var(--dim)",
+                fontFamily: "'DM Sans', sans-serif",
+              }}>none</button>
+            </div>
+          </div>
+        );
+      })}
+
+      <button onClick={() => onConfirm(mapping)} style={{
+        width: "100%", padding: "10px", marginTop: 8, fontSize: 14, fontWeight: 700,
+        borderRadius: 6, border: "1px solid var(--accent)", background: "var(--accent)", color: "#0a1a0a",
+        cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+      }}>Compare with {Object.keys(mapping).length}/{localNames.length} matched</button>
+
+      <button onClick={onCancel} style={{
+        width: "100%", padding: "8px", marginTop: 6, fontSize: 12,
+        borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text)",
+        cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+      }}>Back</button>
+    </>
   );
 }
 
@@ -2579,6 +3243,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     return Array(N).fill(0);
   });
   const [saveMsg, setSaveMsg] = useState("");
+  // 9-hole verify prompt — shown once per round when 9 holes go in play
+  const [showVerifyPrompt, setShowVerifyPrompt] = useState(false);
+  const verifyPromptShownRef = React.useRef(false);
   const matchupEnabled = !!config.nassau?.on;
   const [matchups, setMatchups] = useState(() =>
     (config.nassau?.matchups || DEFAULT_MATCHUP).map(m => ({ ...m }))
@@ -2690,6 +3357,25 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   React.useEffect(() => { inPlayRef.current = inPlay; }, [inPlay]);
 
   const hasLoggedRef = React.useRef(false);
+  // Verify prompt — fires when user crosses from their starting nine to the other nine
+  // Front-9 start: trigger when on hole 10+ (holeIdx >= 9)
+  // Back-9 start: trigger when on hole 1-9 (holeIdx < 9)
+  // Plus at least 9 holes must be in play
+  React.useEffect(() => {
+    if (verifyPromptShownRef.current) return;
+    if (N <= 1) return; // no need for solo
+    const count = inPlay.filter(Boolean).length;
+    if (count < 9) return;
+    const frontPlayedCount = inPlay.slice(0, 9).filter(Boolean).length;
+    const backPlayedCount = inPlay.slice(9, 18).filter(Boolean).length;
+    const startedOnFront = frontPlayedCount >= backPlayedCount;
+    // Are we on the "other" nine now?
+    const onOtherNine = startedOnFront ? holeIdx >= 9 : holeIdx < 9;
+    if (onOtherNine) {
+      verifyPromptShownRef.current = true;
+      setShowVerifyPrompt(true);
+    }
+  }, [holeIdx, inPlay]); // eslint-disable-line react-hooks/exhaustive-deps
   const results = holes.map((h, hi) => {
     const g = gross[hi];
     // Full-group relative HCPs (for scorecard display, 6-point, matchup)
@@ -3013,6 +3699,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   // Log helper — writes to both tables
   const logRound = React.useCallback(() => {
     const { logBasic, logFull } = buildFullPayload();
+    // Skip if nothing meaningful to log (no holes in play yet)
+    if ((logFull.total_holes_played || 0) === 0) return;
     const rid = logBasic.round_id;
     supaUpsert("rounds_log", rid, logBasic);
     supaUpsert("rounds_full", rid, logFull);
@@ -3076,6 +3764,31 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         @keyframes scoreIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .score-in { animation: scoreIn 0.15s ease-out; }
       `}</style>
+      {showVerifyPrompt && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "var(--card)", border: "1px solid var(--accent)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 380, fontFamily: "'DM Sans', sans-serif" }}>
+            <div style={{ fontSize: 22, fontWeight: 800, color: "var(--text)", marginBottom: 8 }}>↔ Time to verify?</div>
+            <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 16, lineHeight: 1.5 }}>
+              You've completed 9 holes. Cross-check scores with another phone in your group?
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setShowVerifyPrompt(false)} style={{
+                flex: 1, padding: "12px", fontSize: 14, borderRadius: 8, cursor: "pointer",
+                border: "1px solid var(--border)", background: "transparent", color: "var(--text)",
+                fontFamily: "'DM Sans', sans-serif",
+              }}>Later</button>
+              <button onClick={() => { setShowVerifyPrompt(false); setView("totals"); }} style={{
+                flex: 1, padding: "12px", fontSize: 14, fontWeight: 700, borderRadius: 8, cursor: "pointer",
+                border: "1px solid var(--accent)", background: "var(--accent)", color: "#0a1a0a",
+                fontFamily: "'DM Sans', sans-serif",
+              }}>Verify now</button>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text)", marginTop: 10, textAlign: "center" }}>
+              Find Verify ↔ in the $ tab next to the QR code.
+            </div>
+          </div>
+        </div>
+      )}
       {showBackStrokeModal && matchupEnabled && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
@@ -4017,6 +4730,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
             sixesPlayerDollars={sixesPlayerDollars} sixesPlayerTokens={sixesPlayerTokens}
             qrPayload={qrPayload}
             hzEnabled={hzEnabled} ghostEnabled={ghostEnabled}
+            roundId={roundId}
             saveMsg={saveMsg}
             onSave={() => {
               const roundData = {
@@ -4090,12 +4804,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
 }
 
 // TOTALS VIEW
-function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, ptsCum, dollars, dollarsSubtotal, playerCount, vegasVal, ctVal, p3Val, ptsVal, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, vegasPlayers, onSave, onExport, onReport, saveMsg, onHole, isLight, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, qrPayload, hzEnabled, ghostEnabled }) {
+function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, ptsCum, dollars, dollarsSubtotal, playerCount, vegasVal, ctVal, p3Val, ptsVal, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, vegasPlayers, onSave, onExport, onReport, saveMsg, onHole, isLight, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, qrPayload, hzEnabled, ghostEnabled, roundId }) {
   const isSolo = playerCount === 1;
   const vp = vegasPlayers || [0,1,2,3];
   const [tab, setTab] = useState("board");
   const [showHcp, setShowHcp] = useState(false);
   const [showAdj, setShowAdj] = useState(false);
+  const [showVerify, setShowVerify] = useState(false);
   const hcpBase = dollarsSubtotal || dollars;
   const RP = names.map((_,i)=>i);
   const strokeAdj = RP.map(i => {
@@ -4914,13 +5629,22 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
             <div style={{ fontSize: 10, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>
               {qrPayload.length} chars · {names.join(" · ")}
             </div>
-            <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(qrPayload).then(() => { const btn = document.getElementById('copy-payload-btn'); if(btn){btn.textContent='✓ Copied';setTimeout(()=>{btn.textContent='📋 Copy Payload';},1000);} }); }}
-              id="copy-payload-btn"
-              style={{ padding: "6px 14px", background: "transparent", border: "1px solid var(--border2)", borderRadius: 8, color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
-              📋 Copy Payload
-            </button>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(qrPayload).then(() => { const btn = document.getElementById('copy-payload-btn'); if(btn){btn.textContent='✓ Copied';setTimeout(()=>{btn.textContent='📋 Copy Payload';},1000);} }); }}
+                id="copy-payload-btn"
+                style={{ padding: "6px 14px", background: "transparent", border: "1px solid var(--border2)", borderRadius: 8, color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+                📋 Copy Payload
+              </button>
+              <button onClick={() => setShowVerify(true)}
+                style={{ padding: "6px 14px", background: "transparent", border: "1px solid var(--border2)", borderRadius: 8, color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+                ↔ Verify
+              </button>
+            </div>
           </div>
         </Sect>
+      )}
+      {showVerify && qrPayload && (
+        <VerifyModal localPayload={qrPayload} roundId={roundId} onClose={() => setShowVerify(false)} isLight={isLight} />
       )}
     </>
   );
