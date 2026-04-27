@@ -204,11 +204,13 @@ function strokesGiven(hcp, si) {
   return s;
 }
 function nettScore(gross, hcp, si, par) {
+  // Returns RAW nett (gross - strokes received). NO CAP applied.
+  // Vegas applies its own cap (configurable via capPar3/capOther) before forming Vegas number.
+  // Match-play games (CT, Banker, Sixes, Pts, Nassau, GDB, MatchPlay) use raw nett — comparison-only,
+  // so a real blow-up shows truth and doesn't create artificial ties.
   const g = parseInt(gross, 10);
   if (isNaN(g) || g <= 0) return null;
-  const raw = g - strokesGiven(hcp, si);
-  const cap = par === 3 ? par + 3 : par + 4;
-  return Math.min(raw, cap);
+  return g - strokesGiven(hcp, si);
 }
 function vegasNum(n1, n2) {
   if (n1 === null || n2 === null) return null;
@@ -441,11 +443,11 @@ function computeNassau(matchup, gross, holes, inPlay) {
     const g1 = parseInt(gross[hi][p1], 10);
     const g2 = parseInt(gross[hi][p2], 10);
     if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
-    const { si, par } = holes[hi];
+    const { si } = holes[hi];
     const strk = strokesForHole(hi, si, strokeMaps);
-    const cap = par === 3 ? par + 3 : par + 4;
-    const n1 = Math.min(g1 - strk.p1, cap);
-    const n2 = Math.min(g2 - strk.p2, cap);
+    // No cap — match play comparison uses raw nett; cap only matters for Vegas number formation.
+    const n1 = g1 - strk.p1;
+    const n2 = g2 - strk.p2;
     if (n1 < n2) holeWL[hi] = 1;
     else if (n2 < n1) holeWL[hi] = -1;
   }
@@ -528,11 +530,11 @@ function computeGDB9(matchup, gross, holes, inPlay, startHi) {
     const g1 = parseInt(gross[hi][p1], 10);
     const g2 = parseInt(gross[hi][p2], 10);
     if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) { holeWL.push(0); continue; }
-    const { si, par } = holes[hi];
+    const { si } = holes[hi];
     const strk = strokesForHole(hi, si, strokeMaps);
-    const cap = par === 3 ? par + 3 : par + 4;
-    const n1 = Math.min(g1 - strk.p1, cap);
-    const n2 = Math.min(g2 - strk.p2, cap);
+    // No cap — match play comparison uses raw nett.
+    const n1 = g1 - strk.p1;
+    const n2 = g2 - strk.p2;
     holeWL.push(n1 < n2 ? 1 : n2 < n1 ? -1 : 0);
   }
   // Count played holes
@@ -905,7 +907,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
         </svg>`;
       })()}
       <div>
-        <h1>TEE BOX</h1>
+        <h1>teebox</h1>
         <div class="header-sub">May the honors be with you.</div>
       </div>
     </div>
@@ -1052,7 +1054,7 @@ function SplashContent({ onDone, isLight }) {
           <div className="tb-clash" style={{ position:"absolute", top:"50%", left:"50%", width:50, height:50, borderRadius:"50%", background:"radial-gradient(circle, rgba(74,222,128,0.95) 0%, rgba(74,222,128,0.3) 50%, transparent 70%)", pointerEvents:"none" }}/>
         </div>
         <div className="tb-title" style={{ textAlign:"center" }}>
-          <div style={{ fontSize:42, fontWeight:"900", letterSpacing:6, color:"#ffffff", lineHeight:1, fontFamily:"'DM Sans', sans-serif" }}>TEE BOX</div>
+          <div style={{ fontSize:42, fontWeight:"900", letterSpacing:6, color:"#ffffff", lineHeight:1, fontFamily:"'DM Sans', sans-serif" }}>teebox</div>
         </div>
         <div className="tb-tag" style={{ fontSize:13, color:accent, letterSpacing:1, textAlign:"center", fontFamily:"'DM Sans', sans-serif" }}>
           May the honors be with you.
@@ -1110,6 +1112,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [hioRule, setHioRule] = useState(sc?.hioRule ?? true);
   const [ptsVal, setPtsVal] = useState(sc?.ptsVal !== undefined ? sc.ptsVal : 0);
   const [hcpThreshold, setHcpThreshold] = useState(sc?.hcpThreshold ?? 25);
+  // Vegas score cap settings — only applied to Vegas (cap nett before forming Vegas number).
+  // Default par+3 for par-3, par+4 for par-4/5/6 (matches historical hardcode).
+  // No UI exposed yet; values flow through to Vegas pipeline only. KIV configurable UI.
+  const [capPar3, setCapPar3] = useState(sc?.capPar3 ?? 3);
+  const [capOther, setCapOther] = useState(sc?.capOther ?? 4);
   // 3-ball Vegas variant: "hz" (Hero or Zero — default) or "ghost" (virtual 4th player)
   const [threeBallVariant, setThreeBallVariant] = useState(sc?.threeBallVariant ?? "hz");
   // Hero or Zero: bonus on/off for whole round
@@ -1429,7 +1436,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       )}
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "0 0 40px" }}>
         {/* Header */}
-        <div style={{ position: "relative", textAlign: "center", padding: "24px 20px 16px", background: isLight ? "linear-gradient(180deg, #e8f5e8 0%, #f8faf8 100%)" : "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
+        <div style={{ position: "relative", padding: "24px 20px 16px", background: isLight ? "linear-gradient(180deg, #e8f5e8 0%, #f8faf8 100%)" : "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
           <div style={{ position: "absolute", top: 8, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
             <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.1.2</span>
             <div onClick={toggleTheme} title={isLight ? "Switch to Night Mode" : "Switch to Outdoor Mode"}
@@ -1439,10 +1446,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               </div>
             </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 12 }}>
             <TeeBoxLogo size={44} />
             <div style={{ textAlign: "left" }}>
-              <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 28, fontWeight: "900", letterSpacing: 4, color: "var(--accent)", lineHeight: 1 }}>TEE BOX</div>
+              <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 28, fontWeight: "900", letterSpacing: 4, color: isLight ? "#000" : "#fff", lineHeight: 1 }}>teebox</div>
               <div style={{ fontSize: 11, color: "var(--text)", letterSpacing: 1, marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>May the honors be with you.</div>
             </div>
           </div>
@@ -2417,6 +2424,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
               holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
               threeBallVariant, hzBonus,
+              capPar3, capOther,
               games: {
                 vegas: canVegas && games.vegas,
                 ct: canCT && games.ct,
@@ -3143,7 +3151,7 @@ function MatchConfirm({ local, scanned, matchInfo, onConfirm, onCancel }) {
 
 // SCORECARD
 function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
-  const { names, hcps, holes, games, bankerNett = true, hcpCap = null, vegasRules = "council", hioRule = true } = config;
+  const { names, hcps, holes, games, bankerNett = true, hcpCap = null, vegasRules = "council", hioRule = true, capPar3 = 3, capOther = 4 } = config;
   const [vegasVal, setVegasVal] = useState(config.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(config.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(config.p3Val ?? 5);
@@ -3390,11 +3398,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
     const nVP = ghostEnabled
       ? [0,1,2,3].map(pi => {
           if (pi === GHOST_IDX) {
-            // Ghost plays its gross value directly (HCP 0)
-            const gg = parseInt(ghostGross[hi], 10);
-            if (isNaN(gg) || gg <= 0) return null;
-            const cap = h.par === 3 ? h.par + 3 : h.par + 4;
-            return Math.min(gg, cap);
+            // Ghost is treated as a HCP 0 player. nettScore handles validation/null.
+            // Vegas score cap applied at Vegas pipeline (not here) — raw nett returned.
+            return nettScore(ghostGross[hi], 0, h.si, h.par);
           }
           let relHcp = liveHcps[pi] - minHcpVP;
           if (hcpCap !== null) relHcp = Math.min(relHcp, hcpCap);
@@ -3426,6 +3432,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
       nettForVegas = nVP;
       teamsForVegas = vTeams[hi];
     }
+    // Apply Vegas score cap — bound nett values before forming Vegas number.
+    // Cap is Vegas-specific (other games use raw nett for true match-play comparison).
+    const vegasCap = h.par === 3 ? h.par + capPar3 : h.par + capOther;
+    nettForVegas = nettForVegas.map(v => v === null ? null : Math.min(v, vegasCap));
     let vr = (games.vegas && (N >= 4 || ghostEnabled || hzEnabled) && !isHIO) ? computeVegas(teamsForVegas, grossForVegas, nettForVegas, h.par, vegasRules) : null;
     // HZ: if bonus toggle is OFF, zero out bonuses from result
     if (vr && hzEnabled && !hzBonus) {
@@ -3668,6 +3678,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
           hcpThreshold: config.hcpThreshold,
           bankerNett: config.bankerNett,
           hioRule: config.hioRule,
+          capPar3: config.capPar3 ?? 3,
+          capOther: config.capOther ?? 4,
         },
         three_ball_variant: ghostEnabled ? "ghost" : hzEnabled ? "hz" : null,
         hz_bonus: hzEnabled ? !!config.hzBonus : null,
@@ -3827,9 +3839,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                       const g2 = parseInt(gross[h][m.p2], 10);
                       if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
                       const strk = strokesForHole(h, holes[h].si, firstNineStrokeMaps);
-                      const cap = holes[h].par === 3 ? holes[h].par + 3 : holes[h].par + 4;
-                      const n1 = Math.min(g1 - strk.p1, cap);
-                      const n2 = Math.min(g2 - strk.p2, cap);
+                      // No cap — match play comparison uses raw nett.
+                      const n1 = g1 - strk.p1;
+                      const n2 = g2 - strk.p2;
                       if (n1 < n2) p1wins++; else if (n2 < n1) p2wins++;
                     }
                     const netHoles = p1wins - p2wins; // positive = p1 leads
@@ -4448,9 +4460,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         const strk = strokesForHole(holeIdx, h.si, strokeMaps);
                         const g1 = parseInt(gross[holeIdx][m.p1], 10);
                         const g2 = parseInt(gross[holeIdx][m.p2], 10);
-                        const cap = h.par === 3 ? h.par + 3 : h.par + 4;
-                        const nn1 = (inPlay[holeIdx] && !isNaN(g1) && g1 > 0) ? Math.min(g1 - strk.p1, cap) : null;
-                        const nn2 = (inPlay[holeIdx] && !isNaN(g2) && g2 > 0) ? Math.min(g2 - strk.p2, cap) : null;
+                        // No cap — display raw nett to match what computeNassau/GDB use for W/L.
+                        const nn1 = (inPlay[holeIdx] && !isNaN(g1) && g1 > 0) ? (g1 - strk.p1) : null;
+                        const nn2 = (inPlay[holeIdx] && !isNaN(g2) && g2 > 0) ? (g2 - strk.p2) : null;
                         const holeWL = nn1 !== null && nn2 !== null ? (nn1 < nn2 ? 1 : nn2 < nn1 ? -1 : 0) : null;
                         return (
                           <div style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
@@ -5451,9 +5463,9 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                       const strk = sm ? strokesForHole(hi, hole.si, sm) : {p1:0, p2:0};
                       const g1 = parseInt(results[hi]?.g[m.p1], 10);
                       const g2 = parseInt(results[hi]?.g[m.p2], 10);
-                      const cap = hole.par === 3 ? hole.par+3 : hole.par+4;
-                      const n1 = active && !isNaN(g1) && g1>0 ? Math.min(g1-strk.p1, cap) : null;
-                      const n2 = active && !isNaN(g2) && g2>0 ? Math.min(g2-strk.p2, cap) : null;
+                      // No cap on display — raw nett matches what computeNassau/GDB use for W/L.
+                      const n1 = active && !isNaN(g1) && g1>0 ? (g1-strk.p1) : null;
+                      const n2 = active && !isNaN(g2) && g2>0 ? (g2-strk.p2) : null;
                       const wl = active && n1!==null && n2!==null ? r.holeWL[hi] : 0;
                       if (active && n1!==null && n2!==null) running += wl;
                       return { hi, hole, active, n1, n2, wl, strk, run: active&&n1!==null&&n2!==null ? running : null };
