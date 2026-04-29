@@ -25,10 +25,10 @@ const SUPA_HDR = { "Content-Type": "application/json", apikey: SUPA_KEY, Authori
 
 // Upsert helper: PATCH first, POST if not exists
 function supaUpsert(table, roundId, payload) {
-  // Single atomic POST with on-conflict update — no PATCH-then-POST race condition.
-  // Previously: PATCH first, POST if no rows → two simultaneous calls both saw 0 rows
-  // → both attempted INSERT → one failed with constraint violation → Postgres sequence gap.
-  const url = `${SUPA_URL_BASE}/${table}`;
+  // Atomic upsert via POST with on_conflict=round_id.
+  // PostgREST will INSERT if round_id not found, UPDATE if found.
+  // No PATCH-then-POST race condition → no sequence gaps.
+  const url = `${SUPA_URL_BASE}/${table}?on_conflict=round_id`;
   return fetch(url, {
     method: "POST",
     headers: {
