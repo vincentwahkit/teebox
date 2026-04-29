@@ -25,23 +25,18 @@ const SUPA_HDR = { "Content-Type": "application/json", apikey: SUPA_KEY, Authori
 
 // Upsert helper: PATCH first, POST if not exists
 function supaUpsert(table, roundId, payload) {
+  // Single atomic POST with on-conflict update — no PATCH-then-POST race condition.
+  // Previously: PATCH first, POST if no rows → two simultaneous calls both saw 0 rows
+  // → both attempted INSERT → one failed with constraint violation → Postgres sequence gap.
   const url = `${SUPA_URL_BASE}/${table}`;
-  return fetch(`${url}?round_id=eq.${roundId}`, {
-    method: "PATCH",
-    headers: { ...SUPA_HDR, Prefer: "return=representation" },
-    body: JSON.stringify(payload),
-  })
-    .then(r => r.json())
-    .then(rows => {
-      if (!rows || rows.length === 0) {
-        return fetch(url, {
-          method: "POST",
-          headers: SUPA_HDR,
-          body: JSON.stringify({ ...payload, round_id: roundId }),
-        });
-      }
-    })
-    .catch(() => {});
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      ...SUPA_HDR,
+      "Prefer": "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify({ ...payload, round_id: roundId }),
+  }).catch(() => {});
 }
 const VEGAS_VAL = 1;
 const CT_VAL = 3;
@@ -3364,7 +3359,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   React.useEffect(() => { holeIdxRef.current = holeIdx; }, [holeIdx]);
   React.useEffect(() => { inPlayRef.current = inPlay; }, [inPlay]);
 
-  const hasLoggedRef = React.useRef(false);
+  // If resuming a round where all 18 holes are already in-play, treat as already logged
+  // so the 18-hole auto-trigger doesn't fire again on mount.
+  const restoredInPlay = savedScores?.inPlay || config._savedState?.inPlay;
+  const hasLoggedRef = React.useRef(Array.isArray(restoredInPlay) && restoredInPlay.every(Boolean));
   // Verify prompt — fires when user crosses from their starting nine to the other nine
   // Front-9 start: trigger when on hole 10+ (holeIdx >= 9)
   // Back-9 start: trigger when on hole 1-9 (holeIdx < 9)
@@ -3927,7 +3925,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                 {label}
               </button>
             ))}
-            <button className="tab-btn" onClick={() => { window.scrollTo(0,0); onBack({ gross, vTeams, banker, p3mult, inPlay, liveHcps, liveNames, adjustments, matchups, holeIdx, ghostGross, hzHero }); }}
+            <button className="tab-btn" onClick={() => { window.scrollTo(0,0); onBack({ gross, vTeams, banker, p3mult, inPlay, liveHcps, liveNames, adjustments, matchups, holeIdx, ghostGross, hzHero }, roundId); }}
               style={{ padding: "6px 10px", borderRadius: 6, fontSize: 16, cursor: "pointer", transition: "all 0.15s", border: "1px solid var(--border)", background: "transparent", color: "var(--dim)" }}>
               🏠
             </button>
@@ -5816,6 +5814,6 @@ export default function App() {
   }
   if (showSplash) return <SplashContent onDone={() => setShowSplash(false)} isLight={isLight} />;
   return config
-    ? <Scorecard config={config} onBack={(scores) => { setSavedScores(scores || null); setSavedConfig(config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} />
+    ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} />
     : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} />;
 }
