@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.1.2";
+const APP_VERSION = "vw-1.2.0";
 
 // Device ID: persistent random UUID per install. Used to group rounds without auth.
 function getDeviceId() {
@@ -499,7 +499,7 @@ function computeNassau(matchup, gross, holes, inPlay) {
 
 function nassauDollars(matchup, front, back, overall, presses) {
   const { stake, units = [1, 1, 2], pressMult = 1 } = matchup;
-  if (matchup.type === "stroke") {
+  if (matchup.type === "matchplay") {
     // Net holes won × stake/hole
     const net = overall.status * stake;
     return { frontDollars: 0, backDollars: 0, overallDollars: net, pressDollars: 0, net };
@@ -624,6 +624,64 @@ function gdbDollars(matchup, front, back) {
   };
 }
 
+// STROKE PLAY COMPUTATION — net stroke difference, settled F/B/Overall like Nassau
+// Strokes are negotiated (strokesFront / strokesBack), same as Nassau / Match Play / GDB.
+// Each segment (Front 9, Back 9, Overall 18) computes: diff = sum(p2 capped nett) - sum(p1 capped nett).
+// Per-hole cap matches the rest of the app: par+3 for par 3s, par+4 for par 4/5s.
+function computeStrokePlay(matchup, gross, holes, inPlay) {
+  const { p1, p2 } = matchup;
+  const strokeMaps = buildNassauStrokeMaps(matchup, holes);
+  // Per-hole rows for scorecard + hole view
+  const holeRows = [];
+  // Segment accumulators
+  const seg = (label, startHi, endHi) => ({ label, startHi, endHi, p1Total: 0, p2Total: 0, holesPlayed: 0 });
+  const front   = seg("front", 0, 8);
+  const back    = seg("back",  9, 17);
+  const overall = seg("overall", 0, 17);
+  for (let hi = 0; hi < 18; hi++) {
+    if (!inPlay[hi]) { holeRows.push(null); continue; }
+    const g1 = parseInt(gross[hi][p1], 10);
+    const g2 = parseInt(gross[hi][p2], 10);
+    if (isNaN(g1) || g1 <= 0 || isNaN(g2) || g2 <= 0) { holeRows.push(null); continue; }
+    const par = holes[hi].par;
+    const cap = par === 3 ? par + 3 : par + 4;
+    const strk = strokesForHole(hi, holes[hi].si, strokeMaps);
+    const n1 = Math.min(g1 - strk.p1, cap);
+    const n2 = Math.min(g2 - strk.p2, cap);
+    holeRows.push({
+      n1, n2, s1: strk.p1, s2: strk.p2,
+      capped1: (g1 - strk.p1) > cap,
+      capped2: (g2 - strk.p2) > cap,
+    });
+    overall.p1Total += n1; overall.p2Total += n2; overall.holesPlayed += 1;
+    if (hi < 9) { front.p1Total += n1; front.p2Total += n2; front.holesPlayed += 1; }
+    else        { back.p1Total  += n1; back.p2Total  += n2; back.holesPlayed  += 1; }
+  }
+  // diff > 0 => p1 has lower nett total => p1 wins. status mirrors Nassau convention.
+  const finalize = (s) => ({
+    ...s,
+    diff: s.p2Total - s.p1Total,
+    status: s.holesPlayed === 0 ? 0 : (s.p2Total - s.p1Total),
+  });
+  return {
+    front: finalize(front),
+    back: finalize(back),
+    overall: finalize(overall),
+    holeRows,
+    strokeMaps,
+  };
+}
+
+function strokePlayDollars(matchup, front, back, overall) {
+  const { stake, units = [1, 1, 2] } = matchup;
+  // diff × unit × stake. AS (diff = 0) settles to $0.
+  const frontDollars   = front.diff   === 0 || units[0] === 0 ? 0 : front.diff   * stake * units[0];
+  const backDollars    = back.diff    === 0 || units[1] === 0 ? 0 : back.diff    * stake * units[1];
+  const overallDollars = overall.diff === 0 || units[2] === 0 ? 0 : overall.diff * stake * units[2];
+  const net = frontDollars + backDollars + overallDollars;
+  return { frontDollars, backDollars, overallDollars, pressDollars: 0, net };
+}
+
 // HELPERS
 function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTeams, dollars, nassauMatchups: matchups, nassauResults, nassauEnabled: matchupEnabled, courseName, firstNine }) {
   const ipMask = inPlay.reduce((acc, v, i) => acc + (v ? (1 << i) : 0), 0);
@@ -634,7 +692,7 @@ function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTe
     (t[0][0]===0&&t[0][1]===1&&t[1][0]===2&&t[1][1]===3) ? null : [t[0],t[1]]
   );
   const vt = vtDev.every(v=>v===null) ? [] : vtDev;
-  const nassau = matchupEnabled ? (matchups||[]).map((m,mi) => {
+  const matchup = matchupEnabled ? (matchups||[]).map((m,mi) => {
     const r = (nassauResults||[])?.[mi];
     return { p1:m.p1, p2:m.p2, net:r?.dollars?.net??0 };
   }) : [];
@@ -651,7 +709,7 @@ function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTe
     st: { v:stakes.vegasVal||1, ct:stakes.ctVal||3, p3:stakes.p3Val||5 },
     dl: dollars,
     fn: firstNine || "F",
-    nassau,
+    matchup,
   };
   return JSON.stringify(payload);
 }
@@ -909,7 +967,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     <div class="header-right" style="color:#e8f5e8">
       <div>${dateStr}</div>
       <div>${timeOfDay} · ${courseName || "Custom Course"}</div>
-      <div style="margin-top:2px;color:#4a7a4a">vw-1.1.2</div>
+      <div style="margin-top:2px;color:#4a7a4a">vw-1.2.0</div>
     </div>
   </div>
   ${!isSolo ? `<div>
@@ -947,7 +1005,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     ${scRows}
   </table>
   <div class="footer">
-    Generated by Tee Box vw-1.1.2 · ${new Date().toLocaleString("en-SG")}
+    Generated by Tee Box vw-1.2.0 · ${new Date().toLocaleString("en-SG")}
   </div>
   <div style="text-align:center;margin:10px 0;page-break-inside:avoid">
     <h2 style="font-size:9px;color:#4a7a4a;letter-spacing:2px;text-transform:uppercase;margin:8px 0 6px;border-bottom:1px solid #ddd;padding-bottom:2px">QR Code — Full Round Data</h2>
@@ -1389,9 +1447,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                       const r = computeGDB(m, ss.gross, cfg.holes, ss.inPlay);
                       const dol = gdbDollars(m, r.front, r.back);
                       net = dol.net;
-                    } else if (type === "stroke") {
+                    } else if (type === "matchplay") {
                       const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
                       net = r.overall.status !== 0 ? (r.overall.status > 0 ? 1 : -1) * m.stake * Math.abs(r.overall.status) : 0;
+                    } else if (type === "stroke") {
+                      const r = computeStrokePlay(m, ss.gross, cfg.holes, ss.inPlay);
+                      net = strokePlayDollars(m, r.front, r.back, r.overall).net;
                     } else {
                       const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
                       const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
@@ -1433,7 +1494,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
         {/* Header */}
         <div style={{ position: "relative", padding: "24px 20px 16px", background: isLight ? "linear-gradient(180deg, #e8f5e8 0%, #f8faf8 100%)" : "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
           <div style={{ position: "absolute", top: 8, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-            <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.1.2</span>
+            <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.2.0</span>
             <div onClick={toggleTheme} title={isLight ? "Switch to Night Mode" : "Switch to Outdoor Mode"}
               style={{ width: 36, height: 20, borderRadius: 10, background: isLight ? COLORS[0] : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
               <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isLight ? 18 : 2, transition: "left 0.2s" }}>
@@ -2143,7 +2204,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                       fontSize: 16, fontWeight: "700" }}>
                     {matchupBets.on ? "✓" : "—"}
                   </button>
-                  <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Matchup (Nassau / GDB)</span>
+                  <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Matchup (Nassau / GDB / Match Play / Stroke Play)</span>
                 </div>
                 {/* Matchup config */}
                 {matchupBets.on && (
@@ -2162,8 +2223,24 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                         </div>
                         {/* Type toggle */}
                         <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                          {[["nassau","Nassau"],["gdb","GDB"],["stroke","Match Play"]].map(([val,label]) => (
-                            <button key={val} onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].type=val; return { ...n, matchups: ms }; })}
+                          {[["nassau","Nassau"],["gdb","GDB"],["matchplay","Match Play"],["stroke","Stroke Play"]].map(([val,label]) => (
+                            <button key={val} onClick={() => setMatchupBets(n => {
+                              const ms=n.matchups.map(x=>({...x}));
+                              const cur = ms[mi];
+                              const prev = cur.type || "nassau";
+                              cur.type = val;
+                              // Apply per-type defaults when switching
+                              const curUnits = (cur.units||[1,1,2]).join(",");
+                              if (val === "stroke" && prev !== "stroke") {
+                                // Switching INTO stroke play: only swap if user still has Nassau defaults
+                                if (curUnits === "1,1,2") cur.units = [0, 0, 1];
+                                if (cur.stake === 5) cur.stake = 5; // already $5; explicit for clarity
+                              } else if (prev === "stroke" && val !== "stroke") {
+                                // Switching OUT of stroke play: restore Nassau defaults if untouched
+                                if (curUnits === "0,0,1") cur.units = [1, 1, 2];
+                              }
+                              return { ...n, matchups: ms };
+                            })}
                               style={{ flex: 1, padding: "8px 0", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: "700",
                                 border: `1px solid ${(m.type||"nassau")===val?"var(--accent)":"var(--border)"}`,
                                 background: (m.type||"nassau")===val ? (isLight ? "#000" : "var(--accent)") : "transparent",
@@ -2218,7 +2295,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                           <div>
                             <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Stake</span>
                             <div style={{ fontSize: 10, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
-                              {(m.type||"nassau")==="nassau" ? `F=1× B=1× Overall=2×` : (m.type)==="gdb" ? `Game 3× · Dormie 1× · Bye 1×` : `Net holes won × stake/hole`}
+                              {(m.type||"nassau")==="nassau" ? `F=1× B=1× Overall=2×` : (m.type)==="gdb" ? `Game 3× · Dormie 1× · Bye 1×` : (m.type)==="stroke" ? `Net stroke diff × stake/stroke` : `Net holes won × stake/hole`}
                             </div>
                           </div>
                           <div style={{ display: "flex", alignItems: "center", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
@@ -2227,13 +2304,13 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                             <button className="pm-btn" onClick={() => setMatchupBets(n => { const ms=n.matchups.map(x=>({...x})); ms[mi].stake+=1; return { ...n, matchups: ms }; })} style={S.pmBtnInline}>+</button>
                           </div>
                         </div>
-                        {/* Units ratio — Nassau only */}
-                        {(m.type||"nassau") === "nassau" && (
+                        {/* Units ratio — Nassau and Stroke Play */}
+                        {((m.type||"nassau") === "nassau" || (m.type||"nassau") === "stroke") && (
                           <div style={{ marginBottom: 10 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                               <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Units ratio</span>
                               <span style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
-                                {(m.units||[1,1,2]).join(" : ")} · max ${(m.units||[1,1,2]).reduce((s,u)=>s+u,0) * m.stake}
+                                {(m.units||[1,1,2]).join(" : ")}{(m.type||"nassau") === "nassau" && ` · max $${(m.units||[1,1,2]).reduce((s,u)=>s+u,0) * m.stake}`}
                               </span>
                             </div>
                             <div style={{ display: "flex", gap: 8 }}>
@@ -2259,7 +2336,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                           </div>
                         )}
                         {/* Press mode — Nassau and GDB only */}
-                        {(m.type||"nassau") !== "stroke" && (<>
+                        {(m.type||"nassau") !== "matchplay" && (m.type||"nassau") !== "stroke" && (<>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                           <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Auto Press</span>
                           <div style={{ display: "flex", gap: 6 }}>
@@ -2348,9 +2425,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                             const r = computeGDB(m, ss.gross, cfg.holes, ss.inPlay);
                             const dol = gdbDollars(m, r.front, r.back);
                             net = dol.net;
-                          } else if (type === "stroke") {
+                          } else if (type === "matchplay") {
                             const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
                             net = r.overall.status !== 0 ? (r.overall.status > 0 ? 1 : -1) * m.stake * Math.abs(r.overall.status) : 0;
+                          } else if (type === "stroke") {
+                            const r = computeStrokePlay(m, ss.gross, cfg.holes, ss.inPlay);
+                            net = strokePlayDollars(m, r.front, r.back, r.overall).net;
                           } else {
                             const r = computeNassau(m, ss.gross, cfg.holes, ss.inPlay);
                             const dol = nassauDollars(m, r.front, r.back, r.overall, r.presses);
@@ -2511,7 +2591,7 @@ function decodeQRPayload(str) {
       stakes: parsed.st || {},
       dollars: parsed.dl || [],
       firstNine: parsed.fn || "F",
-      nassau: parsed.nassau || [],
+      matchup: parsed.matchup || parsed.nassau || [],
     };
   } catch(e) { return null; }
 }
@@ -3607,14 +3687,19 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   // 6-point is separate from Vegas/CT/Banker subtotal (like Nassau)
   // Nassau / GDB computation
   const matchupResults = matchupEnabled ? matchups.map(m => {
-    if ((m.type || "nassau") === "gdb") {
+    const t = m.type || "nassau";
+    if (t === "gdb") {
       const result = computeGDB(m, gross, holes, inPlay);
       const dol = gdbDollars(m, result.front, result.back);
       return { ...result, dollars: dol, type: "gdb" };
+    } else if (t === "stroke") {
+      const result = computeStrokePlay(m, gross, holes, inPlay);
+      const dol = strokePlayDollars(m, result.front, result.back, result.overall);
+      return { ...result, dollars: dol, type: "stroke" };
     } else {
       const result = computeNassau(m, gross, holes, inPlay);
       const dol = nassauDollars(m, result.front, result.back, result.overall, result.presses);
-      return { ...result, dollars: dol, type: "nassau" };
+      return { ...result, dollars: dol, type: t };
     }
   }) : [];
   const matchupPlayerDollars = Array(N).fill(0);
@@ -3827,36 +3912,52 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                     const receiver = currentVal >= 0 ? m.p2 : m.p1;
                     const givercol   = currentVal >= 0 ? p1col : p2col;
                     const receivercol = currentVal >= 0 ? p2col : p1col;
+                    const isStrokePlay = m.type === "stroke";
                     // First nine result for this matchup
                     const firstNineStart = secondNineIsBack ? 0 : 9;
                     const firstNineStrokeMaps = buildNassauStrokeMaps(m, holes);
                     let p1wins = 0, p2wins = 0;
+                    let p1NettSum = 0, p2NettSum = 0; // for stroke play
                     for (let h = firstNineStart; h < firstNineStart + 9; h++) {
                       if (!inPlay[h]) continue;
                       const g1 = parseInt(gross[h][m.p1], 10);
                       const g2 = parseInt(gross[h][m.p2], 10);
                       if (isNaN(g1) || isNaN(g2) || g1 <= 0 || g2 <= 0) continue;
                       const strk = strokesForHole(h, holes[h].si, firstNineStrokeMaps);
-                      // No cap — match play comparison uses raw nett.
-                      const n1 = g1 - strk.p1;
-                      const n2 = g2 - strk.p2;
-                      if (n1 < n2) p1wins++; else if (n2 < n1) p2wins++;
+                      if (isStrokePlay) {
+                        const par = holes[h].par;
+                        const cap = par === 3 ? par + 3 : par + 4;
+                        p1NettSum += Math.min(g1 - strk.p1, cap);
+                        p2NettSum += Math.min(g2 - strk.p2, cap);
+                      } else {
+                        // No cap — match play comparison uses raw nett.
+                        const n1 = g1 - strk.p1;
+                        const n2 = g2 - strk.p2;
+                        if (n1 < n2) p1wins++; else if (n2 < n1) p2wins++;
+                      }
                     }
-                    const netHoles = p1wins - p2wins; // positive = p1 leads
-                    const firstNineWinner = netHoles > 0 ? m.p1 : netHoles < 0 ? m.p2 : null;
-                    const firstNineWinCol = netHoles > 0 ? p1col : p2col;
+                    const netHoles = p1wins - p2wins; // positive = p1 leads (Nassau/GDB/MatchPlay)
+                    const strokeDiff = p2NettSum - p1NettSum; // positive = p1 leads (Stroke Play)
+                    const firstNineWinner = isStrokePlay
+                      ? (strokeDiff > 0 ? m.p1 : strokeDiff < 0 ? m.p2 : null)
+                      : (netHoles > 0 ? m.p1 : netHoles < 0 ? m.p2 : null);
+                    const firstNineWinCol = (isStrokePlay ? strokeDiff : netHoles) > 0 ? p1col : p2col;
                     return (
                       <div key={mi} style={{ marginBottom: 0, paddingBottom: 18, borderBottom: mi < matchups.length - 1 ? "1px solid var(--border2)" : "none", marginTop: mi > 0 ? 18 : 0 }}>
                         <div style={{ fontSize: 18, fontWeight: "800", color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
-                          <span style={{ fontSize: 10, color: "var(--text)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1}</span>
+                          <span style={{ fontSize: 10, color: "var(--text)", fontWeight: "500", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1}{isStrokePlay ? " · STROKE PLAY" : ""}</span>
                           <span style={{ color: p1col }}>{liveNames[m.p1]}</span> <span style={{ color: "var(--dim)", fontSize: 14 }}>vs</span> <span style={{ color: p2col }}>{liveNames[m.p2]}</span>
                         </div>
                         {/* First nine result */}
                         <div style={{ background: "var(--input)", borderRadius: 6, padding: "6px 10px", marginBottom: 10, fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
                           <span style={{ color: "var(--text)" }}>{firstNineLabel}: </span>
-                          {firstNineWinner !== null
-                            ? <span style={{ color: firstNineWinCol, fontWeight: "700" }}>{liveNames[firstNineWinner]} {Math.abs(netHoles)} UP ({p1wins}W–{p2wins}W)</span>
-                            : <span style={{ color: "var(--text)", fontWeight: "700" }}>All Square ({p1wins}W–{p2wins}W)</span>
+                          {isStrokePlay
+                            ? (firstNineWinner !== null
+                                ? <span style={{ color: firstNineWinCol, fontWeight: "700" }}>{liveNames[firstNineWinner]} by {Math.abs(strokeDiff)} ({p1NettSum}–{p2NettSum})</span>
+                                : <span style={{ color: "var(--text)", fontWeight: "700" }}>All Square ({p1NettSum}–{p2NettSum})</span>)
+                            : (firstNineWinner !== null
+                                ? <span style={{ color: firstNineWinCol, fontWeight: "700" }}>{liveNames[firstNineWinner]} {Math.abs(netHoles)} UP ({p1wins}W–{p2wins}W)</span>
+                                : <span style={{ color: "var(--text)", fontWeight: "700" }}>All Square ({p1wins}W–{p2wins}W)</span>)
                           }
                         </div>
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -4427,7 +4528,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   const p1col = isLight ? COLORS_LIGHT[m.p1] : COLORS[m.p1];
                   const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
                   const isGDB = m.type === "gdb";
-                  const isStroke = m.type === "stroke";
+                  const isMatchPlay = m.type === "matchplay";
+                  const isStrokePlay = m.type === "stroke";
                   const segLabel = (seg) => {
                     if (!seg || seg.holesPlayed === 0) return <span style={{ color: "var(--text)", fontWeight: "600" }}>—</span>;
                     if (seg.status === 0) return <span style={{ color: "var(--text)", fontWeight: "700" }}>AS</span>;
@@ -4440,7 +4542,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                   return (
                     <div key={mi} style={{ background: "var(--card)", borderRadius: 10, padding: "12px 14px", marginBottom: 10, border: `2px solid ${isLight?"#888":"#3a5a3a"}` }}>
                       <div style={{ fontSize: 18, fontWeight: "800", color: "var(--text)", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>
-                        <span style={{ fontSize: 11, color: "var(--text)", fontWeight: "600", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isStroke ? "MATCH PLAY" : "NASSAU"}</span>
+                        <span style={{ fontSize: 11, color: "var(--text)", fontWeight: "600", letterSpacing: 1, display: "block", marginBottom: 2 }}>MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isMatchPlay ? "MATCH PLAY" : isStrokePlay ? "STROKE PLAY" : "NASSAU"}</span>
                         <span style={{ color: p1col }}>{liveNames[m.p1]}</span> <span style={{ color: "var(--dim)", fontSize: 14 }}>vs</span> <span style={{ color: p2col }}>{liveNames[m.p2]}</span>
                         <span style={{ fontSize: 12, fontWeight: "500", color: "var(--text)", marginLeft: 6 }}>{(() => {
                           const eff = holeIdx < 9 ? m.strokesFront : m.strokesBack;
@@ -4454,13 +4556,17 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         })()}</span>
                       </div>
                                     {(() => {
-                        const strokeMaps = r.strokeMaps;
-                        const strk = strokesForHole(holeIdx, h.si, strokeMaps);
+                        const strk = strokesForHole(holeIdx, h.si, r.strokeMaps);
                         const g1 = parseInt(gross[holeIdx][m.p1], 10);
                         const g2 = parseInt(gross[holeIdx][m.p2], 10);
-                        // No cap — display raw nett to match what computeNassau/GDB use for W/L.
-                        const nn1 = (inPlay[holeIdx] && !isNaN(g1) && g1 > 0) ? (g1 - strk.p1) : null;
-                        const nn2 = (inPlay[holeIdx] && !isNaN(g2) && g2 > 0) ? (g2 - strk.p2) : null;
+                        // For stroke play we DO cap (par+3 par3, par+4 par4/5) since the totals are summed.
+                        // For Nassau/GDB/Match Play: no display cap — match the W/L logic those games use.
+                        const par = h.par;
+                        const cap = par === 3 ? par + 3 : par + 4;
+                        const rawN1 = (inPlay[holeIdx] && !isNaN(g1) && g1 > 0) ? (g1 - strk.p1) : null;
+                        const rawN2 = (inPlay[holeIdx] && !isNaN(g2) && g2 > 0) ? (g2 - strk.p2) : null;
+                        const nn1 = isStrokePlay && rawN1 !== null ? Math.min(rawN1, cap) : rawN1;
+                        const nn2 = isStrokePlay && rawN2 !== null ? Math.min(rawN2, cap) : rawN2;
                         const holeWL = nn1 !== null && nn2 !== null ? (nn1 < nn2 ? 1 : nn2 < nn1 ? -1 : 0) : null;
                         return (
                           <div style={{ display: "flex", gap: 8, marginBottom: 6, alignItems: "center" }}>
@@ -4493,7 +4599,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         );
                       })()}
                       {/* Nassau: Front/Back/Overall status boxes */}
-                      {!isGDB && !isStroke && (
+                      {!isGDB && !isMatchPlay && !isStrokePlay && (
                         <div style={{ display: "flex", gap: 8, fontSize: 14, fontFamily: "'DM Sans', sans-serif", marginTop: 8 }}>
                           {[["FRONT", r.front], ["BACK", r.back], ["OVERALL", r.overall]].map(([label, seg]) => (
                             <div key={label} style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 6px" }}>
@@ -4504,7 +4610,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                         </div>
                       )}
                       {/* Match play: running hole count */}
-                      {isStroke && (
+                      {isMatchPlay && (
                         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                           <div style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 8px" }}>
                             <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>RUNNING</div>
@@ -4524,8 +4630,36 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
                           </div>
                         </div>
                       )}
+                      {/* Stroke play: F/B/Overall diff boxes */}
+                      {isStrokePlay && (() => {
+                        const u = m.units || [1, 1, 2];
+                        const segBox = (label, seg, unit) => {
+                          const muted = unit === 0;
+                          const txtCol = muted ? "var(--dim)" : seg.holesPlayed === 0 ? "var(--text)"
+                            : seg.diff === 0 ? "var(--text)"
+                            : seg.diff > 0 ? p1col : p2col;
+                          const text = seg.holesPlayed === 0 ? "—"
+                            : seg.diff === 0 ? "AS"
+                            : `${seg.diff > 0 ? liveNames[m.p1] : liveNames[m.p2]} ${Math.abs(seg.diff)}`;
+                          const dollarPreview = muted ? "" : seg.diff === 0 ? "" : `$${Math.abs(seg.diff * m.stake * unit)}`;
+                          return (
+                            <div key={label} style={{ flex: 1, textAlign: "center", background: "var(--input)", borderRadius: 6, padding: "6px 6px", opacity: muted ? 0.4 : 1 }}>
+                              <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>{label} ×{unit}</div>
+                              <div style={{ fontWeight: "700", color: txtCol, fontSize: 14, fontFamily: "'DM Sans', sans-serif" }}>{text}</div>
+                              {dollarPreview && <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>{dollarPreview}</div>}
+                            </div>
+                          );
+                        };
+                        return (
+                          <div style={{ display: "flex", gap: 8, fontSize: 14, fontFamily: "'DM Sans', sans-serif", marginTop: 8 }}>
+                            {segBox("FRONT",   r.front,   u[0])}
+                            {segBox("BACK",    r.back,    u[1])}
+                            {segBox("OVERALL", r.overall, u[2])}
+                          </div>
+                        );
+                      })()}
                       {/* Press status */}
-                      {!isGDB && !isStroke && r.presses?.length > 0 && r.presses.map((p, pi) => (
+                      {!isGDB && !isMatchPlay && !isStrokePlay && r.presses?.length > 0 && r.presses.map((p, pi) => (
                         <div key={pi} style={{ marginTop: 6, background: "var(--input)", borderRadius: 6, padding: "6px 10px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <span style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 1, fontWeight: "700" }}>PRESS {pi+1} (from H{p.startHole})</span>
                           <span style={{ fontSize: 14, fontWeight: "700", color: "var(--text)" }}>{segLabel(p)}</span>
@@ -4821,6 +4955,39 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
   const [showHcp, setShowHcp] = useState(false);
   const [showAdj, setShowAdj] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
+  const [copyStatus, setCopyStatus] = useState(""); // "", "ok", or "err: ..."
+  async function copyPayloadToClipboard() {
+    // Try modern API first; if it throws (iframe sandbox / permission denied), fall back.
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(qrPayload);
+        setCopyStatus("ok");
+        setTimeout(() => setCopyStatus(""), 2000);
+        return;
+      } catch (e) { /* fall through to legacy path */ }
+    }
+    // Fallback: hidden textarea + execCommand. Works in older Safari, sandboxed iframes,
+    // and non-secure contexts. Less reliable on mobile but a good backstop.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = qrPayload;
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, qrPayload.length);
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (!ok) throw new Error("execCommand copy returned false");
+      setCopyStatus("ok");
+    } catch (e) {
+      setCopyStatus("err: " + (e.message || "unknown"));
+    }
+    setTimeout(() => setCopyStatus(""), 2000);
+  }
   const hcpBase = dollarsSubtotal || dollars;
   const RP = names.map((_,i)=>i);
   const strokeAdj = RP.map(i => {
@@ -5342,7 +5509,8 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
             const p1col = isLight ? COLORS_LIGHT[m.p1] : COLORS[m.p1];
             const p2col = isLight ? COLORS_LIGHT[m.p2] : COLORS[m.p2];
             const isGDB = m.type === "gdb";
-            const isStroke = m.type === "stroke";
+            const isMatchPlay = m.type === "matchplay";
+            const isStrokePlay = m.type === "stroke";
             const net = r.dollars.net;
             function segRow(label, seg, dollarAmt) {
               if (!seg) return null;
@@ -5367,7 +5535,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                 {/* Header */}
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>
-                    MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isStroke ? "MATCH PLAY" : "NASSAU"}
+                    MATCH {mi+1} · {isGDB ? "GDB (Game/Dormie/Bye)" : isMatchPlay ? "MATCH PLAY" : isStrokePlay ? "STROKE PLAY" : "NASSAU"}
                   </div>
                   <div style={{ fontSize: 16, fontWeight: "800", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
                     <span style={{ color: p1col }}>{p1name}</span> <span style={{ color: "var(--dim)", fontSize: 13 }}>vs</span> <span style={{ color: p2col }}>{p2name}</span>
@@ -5375,8 +5543,10 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                   <div style={{ fontSize: 11, color: "var(--text)", marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>
                     {isGDB
                       ? `Game/Dormie/Bye · $${m.stake}/unit · max $${m.stake*5}/9`
-                      : isStroke
+                      : isMatchPlay
                       ? `Match play · $${m.stake}/hole · net holes × stake`
+                      : isStrokePlay
+                      ? `Stroke play · ${(m.units||[1,1,2]).join(":")} · $${m.stake}/stroke`
                       : `${(m.units||[1,1,2]).join(":")} · $${m.stake}/unit`
                     } ·{" "}
                     {[["F", m.strokesFront], ["B", m.strokesBack]].map(([label, v]) => {
@@ -5388,7 +5558,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                   </div>
                 </div>
                 {/* Nassau rows */}
-                {!isGDB && !isStroke && (() => {
+                {!isGDB && !isMatchPlay && !isStrokePlay && (() => {
                   const { frontDollars, backDollars, overallDollars, pressDollars } = r.dollars;
                   const u = m.units||[1,1,2];
                   return <>
@@ -5402,8 +5572,37 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                     })}
                   </>;
                 })()}
+                {/* Stroke play rows */}
+                {isStrokePlay && (() => {
+                  const { frontDollars, backDollars, overallDollars } = r.dollars;
+                  const u = m.units || [1, 1, 2];
+                  const segStrokeRow = (label, seg, dollarAmt) => {
+                    const statusText = seg.holesPlayed === 0 ? "—"
+                      : seg.diff === 0 ? "AS"
+                      : `${seg.diff > 0 ? p1name : p2name} by ${Math.abs(seg.diff)}`;
+                    const statusCol = seg.diff > 0 ? p1col : seg.diff < 0 ? p2col : "var(--dim)";
+                    const dollarCol = dollarAmt > 0 ? (isLight?"#16a34a":COLORS[0]) : dollarAmt < 0 ? "var(--neg)" : "var(--dim)";
+                    return (
+                      <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid var(--border)" }}>
+                        <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600", width: 90 }}>{label}</span>
+                        <span style={{ fontSize: 13, fontWeight: "600", color: statusCol, fontFamily: "'DM Sans', sans-serif", flex: 1, textAlign: "center" }}>{statusText}</span>
+                        <span style={{ fontSize: 14, fontWeight: "700", color: dollarCol, fontFamily: "'DM Sans', sans-serif", width: 56, textAlign: "right" }}>
+                          {dollarAmt === 0 ? "—" : `${dollarAmt > 0 ? "+" : ""}$${Math.abs(dollarAmt)}`}
+                        </span>
+                      </div>
+                    );
+                  };
+                  return <>
+                    {u[0] > 0 && segStrokeRow(`Front 9 ×${u[0]}`, r.front, frontDollars)}
+                    {u[1] > 0 && segStrokeRow(`Back 9 ×${u[1]}`, r.back, backDollars)}
+                    {u[2] > 0 && segStrokeRow(`Overall ×${u[2]}`, r.overall, overallDollars)}
+                    <div style={{ fontSize: 11, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", padding: "4px 0" }}>
+                      Diff × $${m.stake}/stroke × unit · per-hole cap par+3/par+4 · {r.overall.holesPlayed}/18 played
+                    </div>
+                  </>;
+                })()}
                 {/* Match play rows */}
-                {isStroke && (() => {
+                {isMatchPlay && (() => {
                   const s = r.overall.status;
                   const holesW = s > 0 ? s : 0;
                   const holesL = s < 0 ? Math.abs(s) : 0;
@@ -5531,6 +5730,83 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                     </div>
                   );
                 })()}
+                {/* Stroke play scorecard */}
+                {isStrokePlay && r.holeRows && (() => {
+                  const renderNine = (startHi, nineLabel) => {
+                    const holeNums = Array.from({length:9}, (_,i) => startHi+i);
+                    let runP1 = 0, runP2 = 0;
+                    const hd = holeNums.map(hi => {
+                      const hole = holes[hi];
+                      const active = inPlay[hi];
+                      const row = r.holeRows[hi];
+                      const n1 = row ? row.n1 : null;
+                      const n2 = row ? row.n2 : null;
+                      const s1 = row ? row.s1 : (r.strokeMaps ? strokesForHole(hi, hole.si, r.strokeMaps).p1 : 0);
+                      const s2 = row ? row.s2 : (r.strokeMaps ? strokesForHole(hi, hole.si, r.strokeMaps).p2 : 0);
+                      if (row) { runP1 += n1; runP2 += n2; }
+                      return { hi, hole, active, n1, n2, s1, s2, run: row ? (runP2 - runP1) : null };
+                    });
+                    const p1tot = hd.reduce((s,{n1})=>s+(n1!==null?n1:0),0);
+                    const p2tot = hd.reduce((s,{n2})=>s+(n2!==null?n2:0),0);
+                    const endDiff = p2tot - p1tot;
+                    const endCol = endDiff>0?p1col:endDiff<0?p2col:"var(--dim)";
+                    const endTxt = endDiff===0?"AS":`${endDiff>0?p1name.slice(0,5):p2name.slice(0,5)} ${Math.abs(endDiff)}`;
+                    const cS = (bg) => ({ padding:"3px 2px", textAlign:"center", fontSize:11, border:"1px solid var(--border)", background:bg||"var(--input)", minWidth:18 });
+                    const hS = { padding:"3px 2px", textAlign:"center", fontSize:10, color:"var(--muted)", fontWeight:"600", background:"var(--card)", border:"1px solid var(--border)" };
+                    return (
+                      <div style={{ marginTop:10, overflowX:"auto" }}>
+                        <div style={{ fontSize:10, color:"var(--accent)", letterSpacing:2, fontWeight:"700", fontFamily:"'DM Sans', sans-serif", marginBottom:4 }}>{nineLabel}</div>
+                        <table style={{ borderCollapse:"collapse", width:"100%" }}>
+                          <tbody>
+                            <tr>
+                              <td style={{ ...hS, textAlign:"left", paddingLeft:4, minWidth:44 }}></td>
+                              {holeNums.map(hi => <td key={hi} style={hS}>{hi+1}</td>)}
+                              <td style={{ ...hS, minWidth:28 }}>TOT</td>
+                            </tr>
+                            <tr>
+                              <td style={{ ...cS("var(--card)"), textAlign:"left", paddingLeft:4, fontWeight:"700", color:p1col, fontSize:11 }}>{p1name.slice(0,5)}</td>
+                              {hd.map(({hi,active,n1,s1}) => (
+                                <td key={hi} style={{ ...cS(), color:active?"var(--text)":"var(--dim)", opacity:active?1:0.35 }}>
+                                  {active&&n1!==null?<>{n1}{s1>0&&<sup style={{color:"var(--accent)",fontSize:8}}>+{s1}</sup>}</>:"·"}
+                                </td>
+                              ))}
+                              <td style={{ ...cS("var(--card)"), fontWeight:"700", color:p1col }}>{p1tot||"·"}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ ...cS("var(--card)"), textAlign:"left", paddingLeft:4, fontWeight:"700", color:p2col, fontSize:11 }}>{p2name.slice(0,5)}</td>
+                              {hd.map(({hi,active,n2,s2}) => (
+                                <td key={hi} style={{ ...cS("var(--bg)"), color:active?"var(--text)":"var(--dim)", opacity:active?1:0.35 }}>
+                                  {active&&n2!==null?<>{n2}{s2>0&&<sup style={{color:"var(--accent)",fontSize:8}}>+{s2}</sup>}</>:"·"}
+                                </td>
+                              ))}
+                              <td style={{ ...cS("var(--card)"), fontWeight:"700", color:p2col }}>{p2tot||"·"}</td>
+                            </tr>
+                            <tr>
+                              <td style={{ ...cS("var(--card)"), textAlign:"left", paddingLeft:4, fontSize:10, color:"var(--muted)" }}>Diff</td>
+                              {hd.map(({hi,active,run},idx) => {
+                                const isLast = idx===8;
+                                const txt = run===null ? "·" : run===0 ? "0" : `${run>0?"+":""}${run}`;
+                                const col = run>0?p1col:run<0?p2col:"var(--dim)";
+                                return <td key={hi} style={{ ...cS("var(--card)"), color:active&&run!==null?col:"var(--dim)", fontWeight:"700", fontSize:10, opacity:active?1:0.35 }}>
+                                  {isLast&&run!==null
+                                    ? <div style={{lineHeight:1.1}}><div>{txt}</div><div style={{color:endCol,fontSize:8,fontWeight:"700"}}>{endTxt}</div></div>
+                                    : txt}
+                                </td>;
+                              })}
+                              <td style={{ ...cS("var(--card)"), fontSize:9, color:endCol, fontWeight:"700", whiteSpace:"nowrap" }}>{endTxt}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  };
+                  return (
+                    <div style={{ marginTop:8, borderTop:"1px solid var(--border)", paddingTop:8 }}>
+                      {renderNine(0, "FRONT 9")}
+                      {renderNine(9, "BACK 9")}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
@@ -5639,17 +5915,21 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
             <div style={{ fontSize: 10, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>
               {qrPayload.length} chars · {names.join(" · ")}
             </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-              <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(qrPayload).then(() => { const btn = document.getElementById('copy-payload-btn'); if(btn){btn.textContent='✓ Copied';setTimeout(()=>{btn.textContent='📋 Copy Payload';},1000);} }); }}
-                id="copy-payload-btn"
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={copyPayloadToClipboard}
                 style={{ padding: "6px 14px", background: "transparent", border: "1px solid var(--border2)", borderRadius: 8, color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
-                📋 Copy Payload
+                {copyStatus === "ok" ? "✓ Copied" : copyStatus.startsWith("err") ? "⚠ Failed" : "📋 Copy Payload"}
               </button>
               <button onClick={() => setShowVerify(true)}
                 style={{ padding: "6px 14px", background: "transparent", border: "1px solid var(--border2)", borderRadius: 8, color: "var(--accent)", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
                 ↔ Verify
               </button>
             </div>
+            {copyStatus.startsWith("err") && (
+              <div style={{ fontSize: 11, color: "var(--neg)", marginTop: 6, fontFamily: "'DM Sans', sans-serif" }}>
+                {copyStatus}
+              </div>
+            )}
           </div>
         </Sect>
       )}
