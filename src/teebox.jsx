@@ -3919,7 +3919,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   //   2. fetchOtherFlights() — pulls other flights' gross arrays
   //   3. diff vs prevSnapshot → detect new birdies/eagles/HIO → toast
   // Snapshot persists in localStorage so iPhone PWA kill/relaunch works correctly.
-  // Ticker state: array of {id, emoji, text}, last 10. lastArrival = ms epoch.
+  // Highlights ticker (birdies/eagles/HIO from other flights)
   const [tickerItems, setTickerItems] = useState([]);
   const [lastArrival, setLastArrival] = useState(0);
   // Force re-render every 5s to evaluate the 60s auto-hide window
@@ -3930,6 +3930,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     return () => clearInterval(t);
   }, [tickerItems.length]);
   const tickerVisible = tickerItems.length > 0 && (Date.now() - lastArrival) < 60000;
+  // Scores ticker — appears once per fetch, single pass, then disappears.
+  // Stores: array of { name, color, vsPar, lastHole } per player from all flights.
+  const [scoresTicker, setScoresTicker] = useState(null); // null = hidden, [] = empty pass, [{...}] = showing
+  const scoresTickerHideRef = React.useRef(null);
   const groupCode = (config.groupCode || "").trim();
   const todayKey = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
   const snapshotKey = groupCode ? `sws_highlights_${groupCode}_${todayKey}` : null;
@@ -3990,6 +3994,33 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     setLastArrival(Date.now());
     playChime();
   }
+  // Helper: compute vsPar + lastHole for a flight's gross + in_play + holes
+  function computeFlightScores(grossArr, inPlayArr, holesArr, names, isSelf) {
+    const N = (grossArr[0] || []).length;
+    const out = [];
+    for (let pi = 0; pi < N; pi++) {
+      let grossSum = 0, parSum = 0, lastHole = 0;
+      for (let hi = 0; hi < Math.min(grossArr.length, holesArr.length); hi++) {
+        if (!inPlayArr[hi]) continue;
+        const g = parseInt(grossArr[hi]?.[pi], 10) || 0;
+        const p = holesArr[hi]?.par;
+        if (g > 0 && p) {
+          grossSum += g;
+          parSum += p;
+          if (hi + 1 > lastHole) lastHole = hi + 1;
+        }
+      }
+      if (lastHole === 0) continue; // no holes played yet
+      const vsPar = grossSum - parSum;
+      out.push({
+        name: names[pi] || `P${pi+1}`,
+        vsPar,
+        lastHole,
+        isSelf: !!isSelf,
+      });
+    }
+    return out;
+  }
   async function fetchOtherFlightsAndDiff() {
     if (!groupCode || !prevSnapshotRef.current) return;
     try {
@@ -4000,18 +4031,23 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       const flights = await res.json();
       const snap = prevSnapshotRef.current;
       let dirty = false;
+      // Aggregate scores from all flights (incl. self from local state)
+      const allScores = computeFlightScores(gross, inPlay, holes, liveNames.slice(0, N), true);
       flights.forEach(flight => {
-        if (flight.round_id === myRid) return; // skip self
         const fgross = flight.gross || [];
         const fholes = flight.course_holes || [];
         const fplayers = (flight.players || []).map(p => p?.name || "");
         const fInPlay = flight.in_play || [];
-        // toasted[hi_pi] = true once we've shown a highlight for that cell.
-        // Survives kill/relaunch via localStorage.
+        // Add this flight's scores to the aggregate (skip self — already added above)
+        if (flight.round_id !== myRid) {
+          const fs = computeFlightScores(fgross, fInPlay, fholes, fplayers, false);
+          allScores.push(...fs);
+        }
+        // Highlights diff (other flights only)
+        if (flight.round_id === myRid) return; // skip self for highlights
         const flightSnap = snap[flight.round_id] || { toasted: {} };
         const toasted = flightSnap.toasted || {};
         for (let hi = 0; hi < Math.min(fgross.length, fholes.length); hi++) {
-          // Only consider holes the other flight marked as in-play (real entry, not par-default).
           if (!fInPlay[hi]) continue;
           const par = fholes[hi]?.par;
           if (!par) continue;
@@ -4020,17 +4056,17 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             const newG = parseInt(row[pi], 10) || 0;
             if (newG <= 0) continue;
             const cellKey = `${hi}_${pi}`;
-            if (toasted[cellKey]) continue; // already shown
+            if (toasted[cellKey]) continue;
             const name = fplayers[pi] || `P${pi+1}`;
             let shown = false;
             if (newG === 1 && par === 3) {
               pushToast("🕳️", `${name} HOLE-IN-ONE on hole ${hi+1}!`);
               shown = true;
             } else if (newG <= par - 2) {
-              pushToast("🦅", `${name} eagle on hole ${hi+1} (${newG})`);
+              pushToast("🦅", `${name} eagle on hole ${hi+1}`);
               shown = true;
             } else if (newG === par - 1) {
-              pushToast("🐦", `${name} birdie on hole ${hi+1} (${newG})`);
+              pushToast("🐦", `${name} birdie on hole ${hi+1}`);
               shown = true;
             }
             if (shown) toasted[cellKey] = true;
@@ -4040,6 +4076,15 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         dirty = true;
       });
       if (dirty) persistSnapshot();
+      // Trigger scores ticker — sort by vsPar ascending (best first)
+      if (allScores.length > 0) {
+        const sorted = [...allScores].sort((a, b) => a.vsPar - b.vsPar);
+        setScoresTicker(sorted);
+        // Auto-hide after one full pass; pass time depends on item count
+        clearTimeout(scoresTickerHideRef.current);
+        const passMs = Math.max(15000, sorted.length * 2500);
+        scoresTickerHideRef.current = setTimeout(() => setScoresTicker(null), passMs);
+      }
     } catch (_) {}
   }
   // Per-hole trigger: when an inPlay flag changes, log and fetch.
@@ -4113,31 +4158,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         @keyframes slideDown { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
       `}</style>
-      {showVerifyPrompt && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div style={{ background: "var(--card)", border: "1px solid var(--accent)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 380, fontFamily: "'DM Sans', sans-serif" }}>
-            <div style={{ fontSize: 22, fontWeight: 800, color: "var(--text)", marginBottom: 8 }}>↔ Time to verify?</div>
-            <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 16, lineHeight: 1.5 }}>
-              You've completed 9 holes. Cross-check scores with another phone in your group?
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => setShowVerifyPrompt(false)} style={{
-                flex: 1, padding: "12px", fontSize: 14, borderRadius: 8, cursor: "pointer",
-                border: "1px solid var(--border)", background: "transparent", color: "var(--text)",
-                fontFamily: "'DM Sans', sans-serif",
-              }}>Later</button>
-              <button onClick={() => { setShowVerifyPrompt(false); setView("totals"); }} style={{
-                flex: 1, padding: "12px", fontSize: 14, fontWeight: 700, borderRadius: 8, cursor: "pointer",
-                border: "1px solid var(--accent)", background: "var(--accent)", color: "#0a1a0a",
-                fontFamily: "'DM Sans', sans-serif",
-              }}>Verify now</button>
-            </div>
-            <div style={{ fontSize: 11, color: "var(--text)", marginTop: 10, textAlign: "center" }}>
-              Find Verify ↔ in the $ tab next to the QR code.
-            </div>
-          </div>
-        </div>
-      )}
       {showBackStrokeModal && matchupEnabled && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
@@ -4365,6 +4385,39 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                 <span style={{ color: isLight ? "#4ade80" : "#16a34a", margin: "0 4px" }}>•</span>
               </span>
             ))}
+          </div>
+        </div>
+      )}
+      {/* Scores ticker — single pass per fetch, all flights */}
+      {scoresTicker && scoresTicker.length > 0 && (
+        <div style={{
+          position: "sticky", top: tickerVisible ? 36 : 0, zIndex: 9998,
+          background: isLight ? "#1e3a1e" : "#0d2210",
+          borderBottom: `1px solid ${isLight ? "#16a34a" : "#1e3a1e"}`,
+          height: 32, overflow: "hidden",
+          display: "flex", alignItems: "center",
+          fontFamily: "'DM Sans', sans-serif",
+        }}>
+          <div style={{ flexShrink: 0, padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: isLight ? "#16a34a" : "#16a34a", height: "100%", display: "flex", alignItems: "center" }}>
+            LIVE
+          </div>
+          <div style={{
+            display: "flex", gap: 24, whiteSpace: "nowrap", paddingLeft: 18,
+            animation: `tickerScroll ${Math.max(15, scoresTicker.length * 2.5)}s linear forwards`,
+          }}>
+            {[...scoresTicker, ...scoresTicker].map((s, idx) => {
+              const sign = s.vsPar > 0 ? "+" : s.vsPar < 0 ? "" : "";
+              const txt = s.vsPar === 0 ? "E" : `${sign}${s.vsPar}`;
+              const col = s.vsPar < 0 ? (isLight ? "#fbbf24" : "#fbbf24") : s.vsPar === 0 ? "#fff" : (isLight ? "#fff" : "#e8f5e8");
+              return (
+                <span key={`${s.name}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: col, fontWeight: s.isSelf ? 700 : 500 }}>
+                  <span style={{ color: s.isSelf ? "#4ade80" : "var(--muted)", fontSize: 11 }}>{s.isSelf ? "▶" : ""}</span>
+                  <span>{s.name}</span>
+                  <span style={{ fontWeight: 700 }}>{txt}</span>
+                  <span style={{ fontSize: 11, opacity: 0.7 }}>(H{s.lastHole})</span>
+                </span>
+              );
+            })}
           </div>
         </div>
       )}
