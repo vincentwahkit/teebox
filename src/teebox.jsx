@@ -3932,10 +3932,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     }, 2000);
     return () => clearInterval(t);
   }, [flashItems.length]);
-  // Scores ticker — appears once per fetch, single pass, then disappears.
+  // Scores ticker — appears once per fetch, runs for ~3 passes, then disappears.
   // Stores: array of { name, color, vsPar, lastHole } per player from all flights.
   const [scoresTicker, setScoresTicker] = useState(null); // null = hidden, [] = empty pass, [{...}] = showing
-  const scoresTickerHideRef = React.useRef(null);
+  const passesRemainingRef = React.useRef(0);
   const groupCode = (config.groupCode || "").trim();
   const todayKey = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
   const snapshotKey = groupCode ? `sws_highlights_${groupCode}_${todayKey}` : null;
@@ -4059,10 +4059,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       if (allScores.length > 0) {
         const sorted = [...allScores].sort((a, b) => a.vsPar - b.vsPar);
         setScoresTicker(sorted);
-        // Auto-hide after one full pass; pass time depends on item count
-        clearTimeout(scoresTickerHideRef.current);
-        const passMs = Math.max(15000, sorted.length * 2500);
-        scoresTickerHideRef.current = setTimeout(() => setScoresTicker(null), passMs);
+        // Reset passes counter — always show 3 more passes after latest data
+        passesRemainingRef.current = 3;
       }
     } catch (_) {}
   }
@@ -4355,11 +4353,15 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           <div style={{ position: "absolute", top: 0, left: 0, height: "100%", padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: "#16a34a", display: "flex", alignItems: "center", zIndex: 2, boxShadow: "2px 0 6px rgba(0,0,0,0.3)" }}>
             LIVE
           </div>
-          <div style={{
-            display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
-            paddingLeft: 70, height: "100%",
-            animation: `tickerScroll ${Math.max(15, ((scoresTicker?.length||0) + flashItems.length) * 2.5)}s linear forwards`,
-          }}>
+          <div onAnimationIteration={() => {
+              passesRemainingRef.current = Math.max(0, passesRemainingRef.current - 1);
+              if (passesRemainingRef.current <= 0) setScoresTicker(null);
+            }}
+            style={{
+              display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
+              paddingLeft: 70, height: "100%",
+              animation: `tickerScroll ${Math.max(12, ((scoresTicker?.length||0) + flashItems.length) * 1.8)}s linear infinite`,
+            }}>
             {/* Render twice for seamless wrap */}
             {[
               ...flashItems, ...(scoresTicker || []),
