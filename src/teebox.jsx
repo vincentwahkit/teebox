@@ -3375,6 +3375,11 @@ function TickerScroller({ itemCount, onIteration, children }) {
         height: "100%", width: "max-content",
         animation: distancePx > 0 ? `tickerScroll ${duration}s linear infinite` : "none",
         ["--ticker-distance"]: `${distancePx}px`,
+        // GPU acceleration via translate3d in keyframes + these hints for smoother iOS rendering
+        willChange: "transform",
+        backfaceVisibility: "hidden",
+        WebkitBackfaceVisibility: "hidden",
+        WebkitFontSmoothing: "antialiased",
       }}
     >
       {children}
@@ -4199,7 +4204,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         @keyframes scoreIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .score-in { animation: scoreIn 0.15s ease-out; }
         @keyframes slideDown { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        @keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(calc(-1 * var(--ticker-distance, 50%))); } }
+        @keyframes tickerScroll { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(calc(-1 * var(--ticker-distance, 50%)), 0, 0); } }
       `}</style>
       {showBackStrokeModal && matchupEnabled && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
