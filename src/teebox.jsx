@@ -1767,7 +1767,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             {groupCode.length === 4 && (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
                 {groupLookup.state === "loading" && <span style={{ color: "var(--text)" }}>Checking…</span>}
-                {groupLookup.state === "new" && <span style={{ color: isLight ? "#16a34a" : "#4ade80", fontWeight: "600" }}>✨ New group</span>}
+                {groupLookup.state === "new" && (
+                  <div>
+                    <span style={{ color: "var(--text)", fontWeight: "600" }}>No active round yet for this code</span>
+                    <div style={{ fontSize: 11, color: "var(--text)", marginTop: 3, opacity: 0.8 }}>Status updates once any flight starts logging holes</div>
+                  </div>
+                )}
                 {groupLookup.state === "existing" && (
                   <span style={{ color: "var(--text)" }}>
                     <span style={{ color: isLight ? "#16a34a" : "#4ade80", fontWeight: "600" }}>✓ Joining: </span>
@@ -3969,30 +3974,38 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         const fgross = flight.gross || [];
         const fholes = flight.course_holes || [];
         const fplayers = (flight.players || []).map(p => p?.name || "");
-        const prev = snap[flight.round_id] || { gross: null };
-        const prevG = prev.gross;
-        // Iterate every hole/player slot
+        const fInPlay = flight.in_play || [];
+        // toasted[hi_pi] = true once we've shown a highlight for that cell.
+        // Survives kill/relaunch via localStorage.
+        const flightSnap = snap[flight.round_id] || { toasted: {} };
+        const toasted = flightSnap.toasted || {};
         for (let hi = 0; hi < Math.min(fgross.length, fholes.length); hi++) {
+          // Only consider holes the other flight marked as in-play (real entry, not par-default).
+          if (!fInPlay[hi]) continue;
           const par = fholes[hi]?.par;
           if (!par) continue;
           const row = fgross[hi] || [];
           for (let pi = 0; pi < row.length; pi++) {
             const newG = parseInt(row[pi], 10) || 0;
-            const oldG = parseInt(prevG?.[hi]?.[pi], 10) || 0;
-            // New non-zero score where prev was zero = newly entered hole
-            if (newG > 0 && oldG === 0) {
-              const name = fplayers[pi] || `P${pi+1}`;
-              if (newG === 1 && par === 3) {
-                pushToast("🕳️", `${name} HOLE-IN-ONE on hole ${hi+1}!`);
-              } else if (newG <= par - 2) {
-                pushToast("🦅", `${name} eagle on hole ${hi+1} (${newG})`);
-              } else if (newG === par - 1) {
-                pushToast("🐦", `${name} birdie on hole ${hi+1} (${newG})`);
-              }
+            if (newG <= 0) continue;
+            const cellKey = `${hi}_${pi}`;
+            if (toasted[cellKey]) continue; // already shown
+            const name = fplayers[pi] || `P${pi+1}`;
+            let shown = false;
+            if (newG === 1 && par === 3) {
+              pushToast("🕳️", `${name} HOLE-IN-ONE on hole ${hi+1}!`);
+              shown = true;
+            } else if (newG <= par - 2) {
+              pushToast("🦅", `${name} eagle on hole ${hi+1} (${newG})`);
+              shown = true;
+            } else if (newG === par - 1) {
+              pushToast("🐦", `${name} birdie on hole ${hi+1} (${newG})`);
+              shown = true;
             }
+            if (shown) toasted[cellKey] = true;
           }
         }
-        snap[flight.round_id] = { gross: fgross };
+        snap[flight.round_id] = { toasted };
         dirty = true;
       });
       if (dirty) persistSnapshot();
