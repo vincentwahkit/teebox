@@ -3920,8 +3920,18 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   //   3. diff vs prevSnapshot → detect new birdies/eagles/HIO → toast
   // Snapshot persists in localStorage so iPhone PWA kill/relaunch works correctly.
   // Unified ticker: scores from all flights + flash entries (birdies/eagles/HIO)
-  // Flash entries decay after 2 fetch cycles so they don't linger forever.
-  const [flashItems, setFlashItems] = useState([]); // [{ id, emoji, text, decay }]
+  // Flash entries auto-expire 15 seconds after creation, regardless of further fetches.
+  const [flashItems, setFlashItems] = useState([]); // [{ id, emoji, text, expiresAt }]
+  // Tick every 2s to re-render and drop expired flash items
+  const [tickerTick, setTickerTick] = useState(0);
+  React.useEffect(() => {
+    if (flashItems.length === 0) return;
+    const t = setInterval(() => {
+      setTickerTick(x => x + 1);
+      setFlashItems(prev => prev.filter(f => f.expiresAt > Date.now()));
+    }, 2000);
+    return () => clearInterval(t);
+  }, [flashItems.length]);
   // Scores ticker — appears once per fetch, single pass, then disappears.
   // Stores: array of { name, color, vsPar, lastHole } per player from all flights.
   const [scoresTicker, setScoresTicker] = useState(null); // null = hidden, [] = empty pass, [{...}] = showing
@@ -3960,7 +3970,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   }
   function pushToast(emoji, text) {
     const id = Date.now() + Math.random();
-    setFlashItems(prev => [...prev, { id, emoji, text, decay: 2 }]);
+    setFlashItems(prev => [...prev, { id, emoji, text, expiresAt: Date.now() + 15000 }]);
     playChime();
   }
   // Helper: compute vsPar + lastHole for a flight's gross + in_play + holes
@@ -4045,8 +4055,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         dirty = true;
       });
       if (dirty) persistSnapshot();
-      // Decay flash items by 1 each fetch — they expire after 2 fetches
-      setFlashItems(prev => prev.map(f => ({ ...f, decay: f.decay - 1 })).filter(f => f.decay > 0));
       // Trigger scores ticker — sort by vsPar ascending (best first)
       if (allScores.length > 0) {
         const sorted = [...allScores].sort((a, b) => a.vsPar - b.vsPar);
@@ -4341,14 +4349,15 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           background: isLight ? "#1e3a1e" : "#0d2210",
           borderBottom: `1px solid ${isLight ? "#16a34a" : "#1e3a1e"}`,
           height: 36, overflow: "hidden",
-          display: "flex", alignItems: "center",
           fontFamily: "'DM Sans', sans-serif",
         }}>
-          <div style={{ flexShrink: 0, padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: "#16a34a", height: "100%", display: "flex", alignItems: "center" }}>
+          {/* LIVE badge — absolute, always above scrolling content */}
+          <div style={{ position: "absolute", top: 0, left: 0, height: "100%", padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: "#16a34a", display: "flex", alignItems: "center", zIndex: 2, boxShadow: "2px 0 6px rgba(0,0,0,0.3)" }}>
             LIVE
           </div>
           <div style={{
-            display: "flex", gap: 24, whiteSpace: "nowrap", paddingLeft: 18,
+            display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
+            paddingLeft: 70, height: "100%",
             animation: `tickerScroll ${Math.max(15, ((scoresTicker?.length||0) + flashItems.length) * 2.5)}s linear forwards`,
           }}>
             {/* Render twice for seamless wrap */}
