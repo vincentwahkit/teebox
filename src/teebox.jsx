@@ -1082,7 +1082,7 @@ function TeeBoxLogo({ size }) {
   );
 }
 
-function SplashContent({ onDone, isLight }) {
+function SplashContent({ onDone, isLight, isSuperuser, onLogoTap }) {
   const [key, setKey] = useState(0);
   const s = 120, c = s/2;
   const ringS = s*0.80, rx0 = c-ringS/2, ry0 = c-ringS/2;
@@ -1119,7 +1119,7 @@ function SplashContent({ onDone, isLight }) {
         .tb-btn   { animation: tbBtnAppear  0.5s ease                           2.5s  both; }
       `}</style>
       <div key={key} style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:24 }}>
-        <div style={{ position:"relative", width:s, height:s }}>
+        <div onClick={onLogoTap} style={{ position:"relative", width:s, height:s, cursor: onLogoTap ? "pointer" : "default", userSelect: "none", WebkitTapHighlightColor: "transparent" }}>
           <svg className="tb-ring" width={s} height={s} viewBox={`0 0 ${s} ${s}`} style={{ position:"absolute", top:0, left:0 }}>
             <rect width={s} height={s} rx={s*0.16} fill="#0a1a0a"/>
             <rect x={rx0} y={ry0} width={ringS} height={ringS} rx={s*0.04} fill="#071507"/>
@@ -1134,8 +1134,13 @@ function SplashContent({ onDone, isLight }) {
           </svg>
           <div className="tb-clash" style={{ position:"absolute", top:"50%", left:"50%", width:50, height:50, borderRadius:"50%", background:"radial-gradient(circle, rgba(74,222,128,0.95) 0%, rgba(74,222,128,0.3) 50%, transparent 70%)", pointerEvents:"none" }}/>
         </div>
-        <div className="tb-title" style={{ textAlign:"center" }}>
-          <div style={{ fontSize:42, fontWeight:"900", letterSpacing:6, color:"#ffffff", lineHeight:1, fontFamily:"'DM Sans', sans-serif" }}>teebox</div>
+        <div className="tb-title" onClick={onLogoTap} style={{ textAlign:"center", cursor: onLogoTap ? "pointer" : "default", userSelect: "none", WebkitTapHighlightColor: "transparent", position: "relative", display: "inline-block" }}>
+          <div style={{ fontSize:42, fontWeight:"900", letterSpacing:6, color:"#ffffff", lineHeight:1, fontFamily:"'DM Sans', sans-serif", position: "relative", display: "inline-block" }}>
+            teebox
+            {isSuperuser && (
+              <span style={{ position: "absolute", left: "100%", top: "50%", transform: "translateY(-50%)", marginLeft: 10, fontSize: 18, color: accent, letterSpacing: 1 }}>🛡️</span>
+            )}
+          </div>
         </div>
         <div className="tb-tag" style={{ fontSize:13, color:accent, letterSpacing:1, textAlign:"center", fontFamily:"'DM Sans', sans-serif" }}>
           May the honors be with you.
@@ -1150,7 +1155,7 @@ function SplashContent({ onDone, isLight }) {
 }
 
 // SETUP
-function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound }) {
+function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, isSuperuser }) {
   const sc = savedConfig; // shorthand
   // Round is "in progress" when at least one hole has been played (toggled In Play).
   // Used to lock player count + lineup reorder to prevent score corruption.
@@ -1505,10 +1510,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => { window.scrollTo(0,0); 
-                // Strip _roundId on import — importer gets a fresh round ID for their device
-                const importedConfig = { ...importPreview.config };
-                delete importedConfig._roundId;
-                onLoadRound({ ...importPreview, config: importedConfig });
+                // Preserve original _roundId so old rounds remain locked (24h+ rule).
+                // Superuser bypasses the lock if edits are needed.
+                onLoadRound({ ...importPreview });
                 setImportPreview(null);
               }}
                 style={{ ...S.startBtn, flex: 2, fontSize: 15, padding: "13px" }}>Load Round</button>
@@ -1533,7 +1537,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 12 }}>
             <TeeBoxLogo size={44} />
             <div style={{ textAlign: "left" }}>
-              <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 28, fontWeight: "900", letterSpacing: 4, color: isLight ? "#000" : "#fff", lineHeight: 1 }}>teebox</div>
+              <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 28, fontWeight: "900", letterSpacing: 4, color: isLight ? "#000" : "#fff", lineHeight: 1 }}>teebox{isSuperuser && <span style={{ fontSize: 12, color: "var(--accent)", marginLeft: 6, letterSpacing: 1 }}>🛡️</span>}</div>
               <div style={{ fontSize: 11, color: "var(--text)", letterSpacing: 1, marginTop: 3, fontFamily: "'DM Sans', sans-serif" }}>May the honors be with you.</div>
             </div>
           </div>
@@ -3262,7 +3266,7 @@ function MatchConfirm({ local, scanned, matchInfo, onConfirm, onCancel }) {
 }
 
 // SCORECARD
-function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
+function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }) {
   const { names, hcps, holes, games, bankerNett = true, hcpCap = null, vegasRules = "council", hioRule = true, capPar3 = 3, capOther = 4 } = config;
   const [vegasVal, setVegasVal] = useState(config.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(config.ctVal ?? 3);
@@ -3272,6 +3276,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   const saved = config._savedState;
   const savedScores = config._savedScores; // from mid-round back to setup
   const roundId = React.useRef(config._roundId || Date.now()).current;
+  // Lock rounds older than 24h to prevent silent overwrite of historical Supabase data.
+  // Superuser bypasses lock. roundId is a Date.now() ms timestamp.
+  const isOldRound = (Date.now() - roundId) > 24 * 60 * 60 * 1000;
+  const isLocked = isOldRound && !isSuperuser;
   const N = Math.min(config.playerCount || names.length || 4, names.length || 4);
   const players = Array.from({length: N}, (_, i) => i);
   // 3-ball Vegas variants: Hero or Zero (default) or Ghost
@@ -3442,10 +3450,12 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   }, [gross, inPlay, config, onSave, roundId]);
   React.useEffect(() => {
     if (isFirstRender.current) { isFirstRender.current = false; return; }
+    if (isLocked) return; // view-only — don't overwrite localStorage state either
     saveNow();
   }, [gross, inPlay, ghostGross, hzHero]); // eslint-disable-line react-hooks/exhaustive-deps
   // Save on app background / tab hide / unload — prevents data loss if iOS kills the PWA
   React.useEffect(() => {
+    if (isLocked) return; // view-only — don't save
     const onHide = () => {
       if (document.visibilityState === "hidden") saveNow();
     };
@@ -3458,7 +3468,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("beforeunload", onPageHide);
     };
-  }, [saveNow]);
+  }, [saveNow, isLocked]);
   function setVTeam(hi, side, players) {
     setVTeams(prev => { const n=prev.map(r=>[r[0].slice(),r[1].slice()]); n[hi][side]=players; return n; });
   }
@@ -3830,13 +3840,14 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
   }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, holes, vegasVal, ctVal, p3Val, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments, dollarsTotal, dollars, vegasCum, ctCum, p3Cum, ptsCum]);
   // Log helper — writes to both tables
   const logRound = React.useCallback(() => {
+    if (isLocked) return; // view-only — don't overwrite historical rounds
     const { logBasic, logFull } = buildFullPayload();
     // Skip if nothing meaningful to log (no holes in play yet)
     if ((logFull.total_holes_played || 0) === 0) return;
     const rid = logBasic.round_id;
     supaUpsert("rounds_log", rid, logBasic);
     supaUpsert("rounds_full", rid, logFull);
-  }, [buildFullPayload]);
+  }, [buildFullPayload, isLocked]);
   // 18-hole auto-trigger
   React.useEffect(() => {
     if (hasLoggedRef.current) return;
@@ -4035,7 +4046,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         </div>
         <div style={{ padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: "var(--text)", letterSpacing: 2 }}>HOLE</span>
+            <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, color: "var(--text)", letterSpacing: 2 }}>HOLE{isSuperuser && <span style={{ marginLeft: 4, fontSize: 10, color: "var(--accent)" }}>🛡️</span>}</span>
             <select value={holeIdx} style={{ ...S.sel, fontSize: 22, fontWeight: "bold", color: "var(--text)", padding: "2px 8px", fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 1 }}
               onChange={e => { const i = Number(e.target.value); if (!inPlay[i]) window.scrollTo(0,0); setHoleIdx(i); setView("hole"); }}>
               {Array.from({length:18}, (_,i) => (
@@ -4121,8 +4132,15 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme }) {
         )}
 
       </div>
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px" }}>
-        {view === "hole" ? (
+      {isLocked && (
+        <div style={{ background: isLight ? "#fbbf24" : "#3a2a0a", borderBottom: `2px solid ${isLight ? "#d97706" : "#fbbf24"}`, padding: "8px 14px", textAlign: "center", fontFamily: "'DM Sans', sans-serif", fontSize: 12, fontWeight: 700, color: isLight ? "#000" : "#fbbf24", letterSpacing: 2 }}>
+          🔒 VIEW ONLY · ROUND LOCKED (24h+)
+        </div>
+      )}
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px", position: "relative" }}>
+        {isLocked && (
+          <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, pointerEvents: "auto", background: "transparent", cursor: "not-allowed" }} onClick={(e) => { e.stopPropagation(); }} />
+        )}        {view === "hole" ? (
           <>
             {/* HIO Banner */}
             {res.isHIO && (
@@ -6138,6 +6156,25 @@ export default function App() {
   const [isLight, setIsLight] = useState(() => {
     try { return localStorage.getItem("sws_theme") === "light"; } catch { return false; }
   });
+  const [isSuperuser, setIsSuperuser] = useState(() => {
+    try { return localStorage.getItem("sws_superuser") === "1"; } catch { return false; }
+  });
+  const [superToast, setSuperToast] = useState(""); // "ON" or "OFF" briefly
+  const superTapsRef = React.useRef(0);
+  const superTapTimerRef = React.useRef(null);
+  function handleLogoTap() {
+    superTapsRef.current += 1;
+    clearTimeout(superTapTimerRef.current);
+    superTapTimerRef.current = setTimeout(() => { superTapsRef.current = 0; }, 3000);
+    if (superTapsRef.current >= 3) {
+      const next = !isSuperuser;
+      setIsSuperuser(next);
+      try { localStorage.setItem("sws_superuser", next ? "1" : "0"); } catch(_) {}
+      setSuperToast(next ? "🛡️ Superuser ON" : "👤 Normal user");
+      setTimeout(() => setSuperToast(""), 2200);
+      superTapsRef.current = 0;
+    }
+  }
   function toggleTheme() {
     setIsLight(v => {
       const next = !v;
@@ -6172,8 +6209,22 @@ export default function App() {
       try { localStorage.setItem("sws_lastcourse", JSON.stringify({ name: round.config.courseName, tee: "", holes: round.config.holes })); } catch(_) {}
     }
   }
-  if (showSplash) return <SplashContent onDone={() => setShowSplash(false)} isLight={isLight} />;
-  return config
-    ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} />
-    : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} />;
+  if (showSplash) return <SplashContent onDone={() => setShowSplash(false)} isLight={isLight} isSuperuser={isSuperuser} onLogoTap={handleLogoTap} />;
+  return (
+    <>
+      {superToast && (
+        <div style={{
+          position: "fixed", top: 20, left: "50%", transform: "translateX(-50%)",
+          background: isLight ? "#000" : "#fff", color: isLight ? "#fff" : "#000",
+          padding: "10px 18px", borderRadius: 24, fontSize: 14, fontWeight: 600,
+          fontFamily: "'DM Sans', sans-serif", zIndex: 10000,
+          boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+        }}>{superToast}</div>
+      )}
+      {config
+        ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
+        : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} />
+      }
+    </>
+  );
 }
