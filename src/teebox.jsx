@@ -1551,7 +1551,28 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
         {/* Header */}
         <div style={{ position: "relative", padding: "24px 20px 16px", background: isLight ? "linear-gradient(180deg, #e8f5e8 0%, #f8faf8 100%)" : "linear-gradient(180deg, #0d2a0d 0%, #0a1a0a 100%)" }}>
           <div style={{ position: "absolute", top: 8, right: 12, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-            <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.2.2</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {isSuperuser && (
+                <button onClick={async () => {
+                    // Force full reload bypassing cache + clear caches if available
+                    try {
+                      if ("caches" in window) {
+                        const keys = await caches.keys();
+                        await Promise.all(keys.map(k => caches.delete(k)));
+                      }
+                      if ("serviceWorker" in navigator) {
+                        const regs = await navigator.serviceWorker.getRegistrations();
+                        await Promise.all(regs.map(r => r.unregister()));
+                      }
+                    } catch(_) {}
+                    window.location.reload();
+                  }}
+                  style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontWeight: 700, letterSpacing: 1 }}>
+                  ↻ RELOAD
+                </button>
+              )}
+              <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.2.2</span>
+            </div>
             <div onClick={toggleTheme} title={isLight ? "Switch to Night Mode" : "Switch to Outdoor Mode"}
               style={{ width: 36, height: 20, borderRadius: 10, background: isLight ? COLORS[0] : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
               <div style={{ width: 14, height: 14, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isLight ? 18 : 2, transition: "left 0.2s" }}>
