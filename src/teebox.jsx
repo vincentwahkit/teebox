@@ -3343,11 +3343,10 @@ function MatchConfirm({ local, scanned, matchInfo, onConfirm, onCancel }) {
   );
 }
 
-// Ticker scroller — measures actual rendered content width and computes animation duration
-// based on real px/sec target (avoids iPhone vs Mac speed mismatch).
-// Uses CSS var --ticker-distance for explicit pixel-based translate (avoids translateX(-50%)
-// which would resolve to parent's width, not content width).
-function TickerScroller({ itemCount, onIteration, children }) {
+// Ticker scroller — renders N copies of content as one long string, animates
+// linearly from start to end (no looping), fires onComplete when done.
+// This avoids any seamless-wrap concerns since there's literally one continuous scroll.
+function TickerScroller({ items, passes = 5, onComplete, renderItem }) {
   const ref = React.useRef(null);
   const [duration, setDuration] = React.useState(15);
   const [distancePx, setDistancePx] = React.useState(0);
@@ -3355,34 +3354,49 @@ function TickerScroller({ itemCount, onIteration, children }) {
     if (!ref.current) return;
     function measure() {
       const totalWidth = ref.current.scrollWidth;
-      const distancePerPass = totalWidth / 2;
       const PX_PER_SEC = 95;
-      const sec = Math.max(8, distancePerPass / PX_PER_SEC);
+      const sec = Math.max(8, totalWidth / PX_PER_SEC);
       setDuration(sec);
-      setDistancePx(distancePerPass);
+      setDistancePx(totalWidth);
     }
     measure();
-    // Re-measure shortly after in case fonts load and shift widths
     const t = setTimeout(measure, 200);
     return () => clearTimeout(t);
-  }, [itemCount, children]);
+  }, [items, passes]);
+  // Build the content array: items repeated N times with separator between passes
+  const allEntries = [];
+  for (let p = 0; p < passes; p++) {
+    items.forEach((item, i) => {
+      allEntries.push({ item, key: `p${p}-${i}-${item.id || item.name}` });
+    });
+    // Separator between passes (skip after last pass)
+    if (p < passes - 1) {
+      allEntries.push({ separator: true, key: `sep-${p}` });
+    }
+  }
   return (
     <div
       ref={ref}
-      onAnimationIteration={onIteration}
+      onAnimationEnd={onComplete}
       style={{
         display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
         height: "100%", width: "max-content",
-        animation: distancePx > 0 ? `tickerScroll ${duration}s linear infinite` : "none",
+        animation: distancePx > 0 ? `tickerScroll ${duration}s linear forwards` : "none",
         ["--ticker-distance"]: `${distancePx}px`,
-        // GPU acceleration via translate3d in keyframes + these hints for smoother iOS rendering
         willChange: "transform",
         backfaceVisibility: "hidden",
         WebkitBackfaceVisibility: "hidden",
-        WebkitFontSmoothing: "antialiased",
       }}
     >
-      {children}
+      {allEntries.map(entry =>
+        entry.separator ? (
+          <span key={entry.key} style={{ display: "inline-flex", alignItems: "center", gap: 14, fontSize: 14, color: "#16a34a", fontWeight: 700, opacity: 0.7 }}>
+            <span>•</span><span>•</span><span>•</span>
+          </span>
+        ) : (
+          renderItem(entry.item, entry.key)
+        )
+      )}
     </div>
   );
 }
@@ -4003,7 +4017,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   // Scores ticker — appears once per fetch, runs for ~3 passes, then disappears.
   // Stores: array of { name, color, vsPar, lastHole } per player from all flights.
   const [scoresTicker, setScoresTicker] = useState(null); // null = hidden, [] = empty pass, [{...}] = showing
-  const passesRemainingRef = React.useRef(0);
   const groupCode = (config.groupCode || "").trim();
   const todayKey = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
   const snapshotKey = groupCode ? `sws_highlights_${groupCode}_${todayKey}` : null;
@@ -4130,8 +4143,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       if (allScores.length > 0) {
         const sorted = [...allScores].sort((a, b) => a.vsPar - b.vsPar);
         setScoresTicker(sorted);
-        // Reset passes counter — always show 3 more passes after latest data
-        passesRemainingRef.current = 5;
       }
     } catch (_) {}
   }
@@ -4425,46 +4436,37 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             LIVE
           </div>
           {(() => {
-            const itemCount = (scoresTicker?.length || 0) + flashItems.length;
-            // Animation distance = actual measured content width / 2 (since content is doubled).
-            // We measure with a ref + state-driven duration recompute.
-            return (
-              <div style={{ paddingLeft: 70, height: "100%", overflow: "hidden" }}>
-                <TickerScroller
-                  itemCount={itemCount}
-                  onIteration={() => {
-                    passesRemainingRef.current = Math.max(0, passesRemainingRef.current - 1);
-                    if (passesRemainingRef.current <= 0) setScoresTicker(null);
-                  }}
-                >
-            {/* Render twice for seamless wrap */}
-            {[
-              ...flashItems, ...(scoresTicker || []),
-              ...flashItems, ...(scoresTicker || []),
-            ].map((item, idx) => {
+            const items = [...flashItems, ...(scoresTicker || [])];
+            if (items.length === 0) return null;
+            const renderItem = (item, key) => {
               if (item.emoji) {
-                // Flash entry (birdie/eagle/HIO) — bigger, brighter
                 return (
-                  <span key={`flash-${item.id}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: "#fbbf24", fontWeight: 700 }}>
+                  <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: "#fbbf24", fontWeight: 700 }}>
                     <span style={{ fontSize: 20 }}>{item.emoji}</span>
                     <span>{item.text}</span>
                   </span>
                 );
               }
-              // Score entry
               const sign = item.vsPar > 0 ? "+" : "";
               const txt = item.vsPar === 0 ? "E" : `${sign}${item.vsPar}`;
               const col = item.vsPar < 0 ? "#fbbf24" : item.vsPar === 0 ? "#fff" : (isLight ? "#fff" : "#e8f5e8");
               return (
-                <span key={`s-${item.name}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: col, fontWeight: item.isSelf ? 700 : 500 }}>
+                <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: col, fontWeight: item.isSelf ? 700 : 500 }}>
                   <span style={{ color: item.isSelf ? "#4ade80" : "var(--muted)", fontSize: 11 }}>{item.isSelf ? "▶" : ""}</span>
                   <span>{item.name}</span>
                   <span style={{ fontWeight: 700 }}>{txt}</span>
                   <span style={{ fontSize: 11, opacity: 0.7 }}>(H{item.lastHole})</span>
                 </span>
               );
-            })}
-                </TickerScroller>
+            };
+            return (
+              <div style={{ paddingLeft: 70, height: "100%", overflow: "hidden" }}>
+                <TickerScroller
+                  items={items}
+                  passes={5}
+                  onComplete={() => setScoresTicker(null)}
+                  renderItem={renderItem}
+                />
               </div>
             );
           })()}
