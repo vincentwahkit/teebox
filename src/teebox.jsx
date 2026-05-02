@@ -3919,7 +3919,17 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   //   2. fetchOtherFlights() — pulls other flights' gross arrays
   //   3. diff vs prevSnapshot → detect new birdies/eagles/HIO → toast
   // Snapshot persists in localStorage so iPhone PWA kill/relaunch works correctly.
-  const [highlightToasts, setHighlightToasts] = useState([]); // queue of {id, emoji, text}
+  // Ticker state: array of {id, emoji, text}, last 10. lastArrival = ms epoch.
+  const [tickerItems, setTickerItems] = useState([]);
+  const [lastArrival, setLastArrival] = useState(0);
+  // Force re-render every 5s to evaluate the 60s auto-hide window
+  const [tickerTick, setTickerTick] = useState(0);
+  React.useEffect(() => {
+    if (tickerItems.length === 0) return;
+    const t = setInterval(() => setTickerTick(x => x + 1), 5000);
+    return () => clearInterval(t);
+  }, [tickerItems.length]);
+  const tickerVisible = tickerItems.length > 0 && (Date.now() - lastArrival) < 60000;
   const groupCode = (config.groupCode || "").trim();
   const todayKey = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
   const snapshotKey = groupCode ? `sws_highlights_${groupCode}_${todayKey}` : null;
@@ -3929,7 +3939,15 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     if (!snapshotKey) return;
     try {
       const raw = localStorage.getItem(snapshotKey);
-      prevSnapshotRef.current = raw ? JSON.parse(raw) : {};
+      const parsed = raw ? JSON.parse(raw) : {};
+      prevSnapshotRef.current = parsed;
+      // Restore ticker items if any
+      if (Array.isArray(parsed._ticker) && parsed._ticker.length > 0) {
+        setTickerItems(parsed._ticker);
+        // Don't show ticker on cold-load — only show on new arrivals
+        // so set lastArrival to 0 (way more than 60s ago)
+        setLastArrival(0);
+      }
     } catch (_) { prevSnapshotRef.current = {}; }
   }, [snapshotKey]);
   function persistSnapshot() {
@@ -3953,10 +3971,23 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   }
   function pushToast(emoji, text) {
     const id = Date.now() + Math.random();
-    setHighlightToasts(prev => [...prev, { id, emoji, text }]);
-    setTimeout(() => {
-      setHighlightToasts(prev => prev.filter(t => t.id !== id));
-    }, 5000);
+    const item = { id, emoji, text };
+    setTickerItems(prev => {
+      const next = [...prev, item];
+      // Cap at last 10
+      const capped = next.length > 10 ? next.slice(next.length - 10) : next;
+      // Persist alongside snapshot
+      try {
+        if (snapshotKey) {
+          const raw = localStorage.getItem(snapshotKey);
+          const cur = raw ? JSON.parse(raw) : {};
+          cur._ticker = capped;
+          localStorage.setItem(snapshotKey, JSON.stringify(cur));
+        }
+      } catch(_) {}
+      return capped;
+    });
+    setLastArrival(Date.now());
     playChime();
   }
   async function fetchOtherFlightsAndDiff() {
@@ -4080,6 +4111,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         @keyframes scoreIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .score-in { animation: scoreIn 0.15s ease-out; }
         @keyframes slideDown { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
       `}</style>
       {showVerifyPrompt && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
@@ -4311,27 +4343,29 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           🔒 VIEW ONLY · ROUND LOCKED (24h+)
         </div>
       )}
-      {/* Live flight highlights — toast queue */}
-      {highlightToasts.length > 0 && (
-        <div style={{ position: "fixed", top: 70, left: "50%", transform: "translateX(-50%)", zIndex: 9999, display: "flex", flexDirection: "column", gap: 8, pointerEvents: "none", maxWidth: "92%" }}>
-          {highlightToasts.map(t => (
-            <div key={t.id} style={{
-              background: isLight ? "linear-gradient(135deg, #16a34a, #15803d)" : "linear-gradient(135deg, #4ade80, #16a34a)",
-              color: "#fff",
-              padding: "12px 18px",
-              borderRadius: 14,
-              fontFamily: "'DM Sans', sans-serif",
-              fontSize: 14,
-              fontWeight: 600,
-              boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-              display: "flex", alignItems: "center", gap: 10,
-              animation: "slideDown 0.35s cubic-bezier(0.2, 1.2, 0.4, 1)",
-              minWidth: 240, maxWidth: 360,
-            }}>
-              <span style={{ fontSize: 22 }}>{t.emoji}</span>
-              <span style={{ flex: 1 }}>{t.text}</span>
-            </div>
-          ))}
+      {/* Live flight highlights — horizontal ticker */}
+      {tickerVisible && (
+        <div style={{
+          position: "sticky", top: 0, zIndex: 9999,
+          background: isLight ? "#0a1a0a" : "#000",
+          borderBottom: `1px solid ${isLight ? "#1e3a1e" : "#16a34a"}`,
+          height: 36, overflow: "hidden",
+          display: "flex", alignItems: "center",
+          fontFamily: "'DM Sans', sans-serif",
+        }}>
+          <div style={{
+            display: "flex", gap: 28, whiteSpace: "nowrap",
+            animation: `tickerScroll ${Math.max(15, tickerItems.length * 5)}s linear infinite`,
+          }}>
+            {/* Render twice so the loop is seamless */}
+            {[...tickerItems, ...tickerItems].map((t, idx) => (
+              <span key={`${t.id}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: isLight ? "#fff" : "#4ade80", fontWeight: 600 }}>
+                <span style={{ fontSize: 18 }}>{t.emoji}</span>
+                <span>{t.text}</span>
+                <span style={{ color: isLight ? "#4ade80" : "#16a34a", margin: "0 4px" }}>•</span>
+              </span>
+            ))}
+          </div>
         </div>
       )}
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px", position: "relative" }}>
