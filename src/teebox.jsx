@@ -3356,7 +3356,7 @@ function TickerScroller({ itemCount, onIteration, children }) {
     function measure() {
       const totalWidth = ref.current.scrollWidth;
       const distancePerPass = totalWidth / 2;
-      const PX_PER_SEC = 120;
+      const PX_PER_SEC = 95;
       const sec = Math.max(8, distancePerPass / PX_PER_SEC);
       setDuration(sec);
       setDistancePx(distancePerPass);
