@@ -3919,17 +3919,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   //   2. fetchOtherFlights() — pulls other flights' gross arrays
   //   3. diff vs prevSnapshot → detect new birdies/eagles/HIO → toast
   // Snapshot persists in localStorage so iPhone PWA kill/relaunch works correctly.
-  // Highlights ticker (birdies/eagles/HIO from other flights)
-  const [tickerItems, setTickerItems] = useState([]);
-  const [lastArrival, setLastArrival] = useState(0);
-  // Force re-render every 5s to evaluate the 60s auto-hide window
-  const [tickerTick, setTickerTick] = useState(0);
-  React.useEffect(() => {
-    if (tickerItems.length === 0) return;
-    const t = setInterval(() => setTickerTick(x => x + 1), 5000);
-    return () => clearInterval(t);
-  }, [tickerItems.length]);
-  const tickerVisible = tickerItems.length > 0 && (Date.now() - lastArrival) < 60000;
+  // Unified ticker: scores from all flights + flash entries (birdies/eagles/HIO)
+  // Flash entries decay after 2 fetch cycles so they don't linger forever.
+  const [flashItems, setFlashItems] = useState([]); // [{ id, emoji, text, decay }]
   // Scores ticker — appears once per fetch, single pass, then disappears.
   // Stores: array of { name, color, vsPar, lastHole } per player from all flights.
   const [scoresTicker, setScoresTicker] = useState(null); // null = hidden, [] = empty pass, [{...}] = showing
@@ -3945,13 +3937,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       const raw = localStorage.getItem(snapshotKey);
       const parsed = raw ? JSON.parse(raw) : {};
       prevSnapshotRef.current = parsed;
-      // Restore ticker items if any
-      if (Array.isArray(parsed._ticker) && parsed._ticker.length > 0) {
-        setTickerItems(parsed._ticker);
-        // Don't show ticker on cold-load — only show on new arrivals
-        // so set lastArrival to 0 (way more than 60s ago)
-        setLastArrival(0);
-      }
     } catch (_) { prevSnapshotRef.current = {}; }
   }, [snapshotKey]);
   function persistSnapshot() {
@@ -3975,23 +3960,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   }
   function pushToast(emoji, text) {
     const id = Date.now() + Math.random();
-    const item = { id, emoji, text };
-    setTickerItems(prev => {
-      const next = [...prev, item];
-      // Cap at last 10
-      const capped = next.length > 10 ? next.slice(next.length - 10) : next;
-      // Persist alongside snapshot
-      try {
-        if (snapshotKey) {
-          const raw = localStorage.getItem(snapshotKey);
-          const cur = raw ? JSON.parse(raw) : {};
-          cur._ticker = capped;
-          localStorage.setItem(snapshotKey, JSON.stringify(cur));
-        }
-      } catch(_) {}
-      return capped;
-    });
-    setLastArrival(Date.now());
+    setFlashItems(prev => [...prev, { id, emoji, text, decay: 2 }]);
     playChime();
   }
   // Helper: compute vsPar + lastHole for a flight's gross + in_play + holes
@@ -4076,6 +4045,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         dirty = true;
       });
       if (dirty) persistSnapshot();
+      // Decay flash items by 1 each fetch — they expire after 2 fetches
+      setFlashItems(prev => prev.map(f => ({ ...f, decay: f.decay - 1 })).filter(f => f.decay > 0));
       // Trigger scores ticker — sort by vsPar ascending (best first)
       if (allScores.length > 0) {
         const sorted = [...allScores].sort((a, b) => a.vsPar - b.vsPar);
@@ -4363,58 +4334,47 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           🔒 VIEW ONLY · ROUND LOCKED (24h+)
         </div>
       )}
-      {/* Live flight highlights — horizontal ticker */}
-      {tickerVisible && (
+      {/* Unified live ticker — flash entries (birdies/eagles/HIO) + player scores */}
+      {(scoresTicker || flashItems.length > 0) && (
         <div style={{
           position: "sticky", top: 0, zIndex: 9999,
-          background: isLight ? "#0a1a0a" : "#000",
-          borderBottom: `1px solid ${isLight ? "#1e3a1e" : "#16a34a"}`,
+          background: isLight ? "#1e3a1e" : "#0d2210",
+          borderBottom: `1px solid ${isLight ? "#16a34a" : "#1e3a1e"}`,
           height: 36, overflow: "hidden",
           display: "flex", alignItems: "center",
           fontFamily: "'DM Sans', sans-serif",
         }}>
-          <div style={{
-            display: "flex", gap: 28, whiteSpace: "nowrap",
-            animation: `tickerScroll ${Math.max(15, tickerItems.length * 5)}s linear infinite`,
-          }}>
-            {/* Render twice so the loop is seamless */}
-            {[...tickerItems, ...tickerItems].map((t, idx) => (
-              <span key={`${t.id}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: isLight ? "#fff" : "#4ade80", fontWeight: 600 }}>
-                <span style={{ fontSize: 18 }}>{t.emoji}</span>
-                <span>{t.text}</span>
-                <span style={{ color: isLight ? "#4ade80" : "#16a34a", margin: "0 4px" }}>•</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {/* Scores ticker — single pass per fetch, all flights */}
-      {scoresTicker && scoresTicker.length > 0 && (
-        <div style={{
-          position: "sticky", top: tickerVisible ? 36 : 0, zIndex: 9998,
-          background: isLight ? "#1e3a1e" : "#0d2210",
-          borderBottom: `1px solid ${isLight ? "#16a34a" : "#1e3a1e"}`,
-          height: 32, overflow: "hidden",
-          display: "flex", alignItems: "center",
-          fontFamily: "'DM Sans', sans-serif",
-        }}>
-          <div style={{ flexShrink: 0, padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: isLight ? "#16a34a" : "#16a34a", height: "100%", display: "flex", alignItems: "center" }}>
+          <div style={{ flexShrink: 0, padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: "#16a34a", height: "100%", display: "flex", alignItems: "center" }}>
             LIVE
           </div>
           <div style={{
             display: "flex", gap: 24, whiteSpace: "nowrap", paddingLeft: 18,
-            animation: `tickerScroll ${Math.max(15, scoresTicker.length * 2.5)}s linear forwards`,
+            animation: `tickerScroll ${Math.max(15, ((scoresTicker?.length||0) + flashItems.length) * 2.5)}s linear forwards`,
           }}>
-            {[...scoresTicker, ...scoresTicker].map((s, idx) => {
-              const sign = s.vsPar > 0 ? "+" : s.vsPar < 0 ? "" : "";
-              const txt = s.vsPar === 0 ? "E" : `${sign}${s.vsPar}`;
-              const col = s.vsPar < 0 ? (isLight ? "#fbbf24" : "#fbbf24") : s.vsPar === 0 ? "#fff" : (isLight ? "#fff" : "#e8f5e8");
+            {/* Render twice for seamless wrap */}
+            {[
+              ...flashItems, ...(scoresTicker || []),
+              ...flashItems, ...(scoresTicker || []),
+            ].map((item, idx) => {
+              if (item.emoji) {
+                // Flash entry (birdie/eagle/HIO) — bigger, brighter
+                return (
+                  <span key={`flash-${item.id}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: "#fbbf24", fontWeight: 700 }}>
+                    <span style={{ fontSize: 20 }}>{item.emoji}</span>
+                    <span>{item.text}</span>
+                  </span>
+                );
+              }
+              // Score entry
+              const sign = item.vsPar > 0 ? "+" : "";
+              const txt = item.vsPar === 0 ? "E" : `${sign}${item.vsPar}`;
+              const col = item.vsPar < 0 ? "#fbbf24" : item.vsPar === 0 ? "#fff" : (isLight ? "#fff" : "#e8f5e8");
               return (
-                <span key={`${s.name}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: col, fontWeight: s.isSelf ? 700 : 500 }}>
-                  <span style={{ color: s.isSelf ? "#4ade80" : "var(--muted)", fontSize: 11 }}>{s.isSelf ? "▶" : ""}</span>
-                  <span>{s.name}</span>
+                <span key={`s-${item.name}-${idx}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: col, fontWeight: item.isSelf ? 700 : 500 }}>
+                  <span style={{ color: item.isSelf ? "#4ade80" : "var(--muted)", fontSize: 11 }}>{item.isSelf ? "▶" : ""}</span>
+                  <span>{item.name}</span>
                   <span style={{ fontWeight: 700 }}>{txt}</span>
-                  <span style={{ fontSize: 11, opacity: 0.7 }}>(H{s.lastHole})</span>
+                  <span style={{ fontSize: 11, opacity: 0.7 }}>(H{item.lastHole})</span>
                 </span>
               );
             })}
