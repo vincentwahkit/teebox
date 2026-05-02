@@ -1208,7 +1208,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
     setGroupLookup({ state: "loading" });
     const t = setTimeout(async () => {
       try {
-        const url = `${SUPA_URL_BASE}/rounds_full?group_code=eq.${encodeURIComponent(groupCode)}&order=created_at.asc&limit=1`;
+        // Today-only filter (SGT) — old codes don't surface stale rounds
+        const todaySGT = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" }); // YYYY-MM-DD
+        const sinceParam = `&created_at=gte.${todaySGT}T00:00:00%2B08:00`;
+        const url = `${SUPA_URL_BASE}/rounds_full?group_code=eq.${encodeURIComponent(groupCode)}${sinceParam}&order=created_at.asc&limit=1`;
         const res = await fetch(url, { headers: SUPA_HDR });
         if (!res.ok) { setGroupLookup({ state: "error" }); return; }
         const arr = await res.json();
@@ -4004,7 +4007,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     if (!groupCode || !prevSnapshotRef.current) return;
     try {
       const myRid = String(roundId);
-      const url = `${SUPA_URL_BASE}/rounds_full?group_code=eq.${encodeURIComponent(groupCode)}&total_holes_played=gt.0&order=created_at.desc&limit=10`;
+      // Today-only filter (SGT) — only fetch rounds created today, not stale ones
+      const todaySGT = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" });
+      const sinceParam = `&created_at=gte.${todaySGT}T00:00:00%2B08:00`;
+      const url = `${SUPA_URL_BASE}/rounds_full?group_code=eq.${encodeURIComponent(groupCode)}&total_holes_played=gt.0${sinceParam}&order=created_at.desc&limit=10`;
       const res = await fetch(url, { headers: SUPA_HDR });
       if (!res.ok) return;
       const flights = await res.json();
@@ -4353,15 +4359,25 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           <div style={{ position: "absolute", top: 0, left: 0, height: "100%", padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: "#16a34a", display: "flex", alignItems: "center", zIndex: 2, boxShadow: "2px 0 6px rgba(0,0,0,0.3)" }}>
             LIVE
           </div>
-          <div onAnimationIteration={() => {
-              passesRemainingRef.current = Math.max(0, passesRemainingRef.current - 1);
-              if (passesRemainingRef.current <= 0) setScoresTicker(null);
-            }}
-            style={{
-              display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
-              paddingLeft: 70, height: "100%",
-              animation: `tickerScroll ${Math.max(12, ((scoresTicker?.length||0) + flashItems.length) * 1.8)}s linear infinite`,
-            }}>
+          {(() => {
+            const itemCount = (scoresTicker?.length || 0) + flashItems.length;
+            const estItemPx = 140; // ~average pixel width of one ticker entry
+            const contentPx = Math.max(itemCount * estItemPx, 400);
+            const viewportPx = (typeof window !== "undefined" ? window.innerWidth : 400);
+            // Distance covered per pass = content width (translateX -50% of doubled content)
+            // Speed target: ~120px/sec — feels brisk but readable
+            const PX_PER_SEC = 120;
+            const durationSec = Math.max(8, Math.round(contentPx / PX_PER_SEC));
+            return (
+              <div onAnimationIteration={() => {
+                  passesRemainingRef.current = Math.max(0, passesRemainingRef.current - 1);
+                  if (passesRemainingRef.current <= 0) setScoresTicker(null);
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
+                  paddingLeft: 70, height: "100%",
+                  animation: `tickerScroll ${durationSec}s linear infinite`,
+                }}>
             {/* Render twice for seamless wrap */}
             {[
               ...flashItems, ...(scoresTicker || []),
@@ -4389,7 +4405,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                 </span>
               );
             })}
-          </div>
+              </div>
+            );
+          })()}
         </div>
       )}
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px", position: "relative" }}>
