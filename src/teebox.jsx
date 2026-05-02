@@ -4066,7 +4066,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         const sorted = [...allScores].sort((a, b) => a.vsPar - b.vsPar);
         setScoresTicker(sorted);
         // Reset passes counter — always show 3 more passes after latest data
-        passesRemainingRef.current = 3;
+        passesRemainingRef.current = 5;
       }
     } catch (_) {}
   }
@@ -4369,15 +4369,16 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             const PX_PER_SEC = 120;
             const durationSec = Math.max(8, Math.round(contentPx / PX_PER_SEC));
             return (
-              <div onAnimationIteration={() => {
-                  passesRemainingRef.current = Math.max(0, passesRemainingRef.current - 1);
-                  if (passesRemainingRef.current <= 0) setScoresTicker(null);
-                }}
-                style={{
-                  display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
-                  paddingLeft: 70, height: "100%",
-                  animation: `tickerScroll ${durationSec}s linear infinite`,
-                }}>
+              <div style={{ paddingLeft: 70, height: "100%", overflow: "hidden" }}>
+                <div onAnimationIteration={() => {
+                    passesRemainingRef.current = Math.max(0, passesRemainingRef.current - 1);
+                    if (passesRemainingRef.current <= 0) setScoresTicker(null);
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
+                    height: "100%",
+                    animation: `tickerScroll ${durationSec}s linear infinite`,
+                  }}>
             {/* Render twice for seamless wrap */}
             {[
               ...flashItems, ...(scoresTicker || []),
@@ -4405,6 +4406,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                 </span>
               );
             })}
+              </div>
               </div>
             );
           })()}
