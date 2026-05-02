@@ -3322,6 +3322,36 @@ function MatchConfirm({ local, scanned, matchInfo, onConfirm, onCancel }) {
   );
 }
 
+// Ticker scroller — measures actual rendered content width and computes animation duration
+// based on real px/sec target (avoids iPhone vs Mac speed mismatch).
+function TickerScroller({ itemCount, onIteration, children }) {
+  const ref = React.useRef(null);
+  const [duration, setDuration] = React.useState(15); // seconds, recomputed after measure
+  React.useLayoutEffect(() => {
+    if (!ref.current) return;
+    // scrollWidth is the full content width including overflow.
+    // Animation translates by -50% of THIS element, so distance per pass = scrollWidth/2.
+    const totalWidth = ref.current.scrollWidth;
+    const distancePerPass = totalWidth / 2;
+    const PX_PER_SEC = 120;
+    const sec = Math.max(8, distancePerPass / PX_PER_SEC);
+    setDuration(sec);
+  }, [itemCount, children]);
+  return (
+    <div
+      ref={ref}
+      onAnimationIteration={onIteration}
+      style={{
+        display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
+        height: "100%",
+        animation: `tickerScroll ${duration}s linear infinite`,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 // SCORECARD
 function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }) {
   const { names, hcps, holes, games, bankerNett = true, hcpCap = null, vegasRules = "council", hioRule = true, capPar3 = 3, capOther = 4 } = config;
@@ -4361,24 +4391,17 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           </div>
           {(() => {
             const itemCount = (scoresTicker?.length || 0) + flashItems.length;
-            const estItemPx = 140; // ~average pixel width of one ticker entry
-            const contentPx = Math.max(itemCount * estItemPx, 400);
-            const viewportPx = (typeof window !== "undefined" ? window.innerWidth : 400);
-            // Distance covered per pass = content width (translateX -50% of doubled content)
-            // Speed target: ~120px/sec — feels brisk but readable
-            const PX_PER_SEC = 120;
-            const durationSec = Math.max(8, Math.round(contentPx / PX_PER_SEC));
+            // Animation distance = actual measured content width / 2 (since content is doubled).
+            // We measure with a ref + state-driven duration recompute.
             return (
               <div style={{ paddingLeft: 70, height: "100%", overflow: "hidden" }}>
-                <div onAnimationIteration={() => {
+                <TickerScroller
+                  itemCount={itemCount}
+                  onIteration={() => {
                     passesRemainingRef.current = Math.max(0, passesRemainingRef.current - 1);
                     if (passesRemainingRef.current <= 0) setScoresTicker(null);
                   }}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
-                    height: "100%",
-                    animation: `tickerScroll ${durationSec}s linear infinite`,
-                  }}>
+                >
             {/* Render twice for seamless wrap */}
             {[
               ...flashItems, ...(scoresTicker || []),
@@ -4406,7 +4429,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                 </span>
               );
             })}
-              </div>
+                </TickerScroller>
               </div>
             );
           })()}
