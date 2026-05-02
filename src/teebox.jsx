@@ -3324,18 +3324,26 @@ function MatchConfirm({ local, scanned, matchInfo, onConfirm, onCancel }) {
 
 // Ticker scroller — measures actual rendered content width and computes animation duration
 // based on real px/sec target (avoids iPhone vs Mac speed mismatch).
+// Uses CSS var --ticker-distance for explicit pixel-based translate (avoids translateX(-50%)
+// which would resolve to parent's width, not content width).
 function TickerScroller({ itemCount, onIteration, children }) {
   const ref = React.useRef(null);
-  const [duration, setDuration] = React.useState(15); // seconds, recomputed after measure
+  const [duration, setDuration] = React.useState(15);
+  const [distancePx, setDistancePx] = React.useState(0);
   React.useLayoutEffect(() => {
     if (!ref.current) return;
-    // scrollWidth is the full content width including overflow.
-    // Animation translates by -50% of THIS element, so distance per pass = scrollWidth/2.
-    const totalWidth = ref.current.scrollWidth;
-    const distancePerPass = totalWidth / 2;
-    const PX_PER_SEC = 120;
-    const sec = Math.max(8, distancePerPass / PX_PER_SEC);
-    setDuration(sec);
+    function measure() {
+      const totalWidth = ref.current.scrollWidth;
+      const distancePerPass = totalWidth / 2;
+      const PX_PER_SEC = 120;
+      const sec = Math.max(8, distancePerPass / PX_PER_SEC);
+      setDuration(sec);
+      setDistancePx(distancePerPass);
+    }
+    measure();
+    // Re-measure shortly after in case fonts load and shift widths
+    const t = setTimeout(measure, 200);
+    return () => clearTimeout(t);
   }, [itemCount, children]);
   return (
     <div
@@ -3343,8 +3351,9 @@ function TickerScroller({ itemCount, onIteration, children }) {
       onAnimationIteration={onIteration}
       style={{
         display: "flex", alignItems: "center", gap: 24, whiteSpace: "nowrap",
-        height: "100%",
-        animation: `tickerScroll ${duration}s linear infinite`,
+        height: "100%", width: "max-content",
+        animation: distancePx > 0 ? `tickerScroll ${duration}s linear infinite` : "none",
+        ["--ticker-distance"]: `${distancePx}px`,
       }}
     >
       {children}
@@ -4169,7 +4178,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         @keyframes scoreIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
         .score-in { animation: scoreIn 0.15s ease-out; }
         @keyframes slideDown { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-        @keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+        @keyframes tickerScroll { from { transform: translateX(0); } to { transform: translateX(calc(-1 * var(--ticker-distance, 50%))); } }
       `}</style>
       {showBackStrokeModal && matchupEnabled && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
