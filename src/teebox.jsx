@@ -1640,7 +1640,62 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               </button>
             </div>
           )}
-          {/* Quick re-entry to last watched group */}
+          {/* Resume banner — prominent UI for recent in-progress round.
+              Shown when newest saved round is <6h old, NOT yet 18-hole complete,
+              AND user hasn't already loaded it (savedConfig set means already in resume flow). */}
+          {(() => {
+            if (!savedRounds || savedRounds.length === 0) return null;
+            const latest = savedRounds[0];
+            const ageMs = Date.now() - (latest.savedAt || 0);
+            const SIX_HOURS = 6 * 60 * 60 * 1000;
+            if (ageMs > SIX_HOURS) return null;
+            // Don't show if user is already mid-resume (savedConfig is set when arriving from 🏠)
+            if (sc) return null;
+            const ip = latest.config?._savedState?.inPlay || [];
+            const playedCount = Array.isArray(ip) ? ip.filter(Boolean).length : 0;
+            // Hide if round is fully complete — user wants to start fresh, not resume completed round
+            if (playedCount >= 18) return null;
+            const minsAgo = Math.floor(ageMs / 60000);
+            const timeLabel = minsAgo < 1 ? "just now"
+              : minsAgo < 60 ? `${minsAgo} min ago`
+              : `${Math.floor(minsAgo / 60)}h ${minsAgo % 60}m ago`;
+            const playerNames = (latest.config?.names || []).slice(0, latest.config?.playerCount || 4);
+            return (
+              <div style={{
+                marginBottom: 16, padding: "14px 16px",
+                background: isLight ? "rgba(22,163,74,0.08)" : "rgba(74,222,128,0.08)",
+                border: `1px solid var(--accent)`, borderRadius: 12,
+                position: "relative",
+              }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>
+                      ⏱ ROUND IN PROGRESS
+                    </div>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>
+                      {latest.courseName || "Round"}
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", opacity: 0.75 }}>
+                      {playedCount}/18 holes · {timeLabel}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", opacity: 0.6, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {playerNames.join(" · ")}
+                    </div>
+                  </div>
+                  <button onClick={() => onLoadRound(latest)}
+                    style={{
+                      padding: "10px 18px", background: "var(--accent)",
+                      border: `1px solid var(--accent)`, borderRadius: 10,
+                      color: isLight ? "#fff" : "#0a1a0a",
+                      fontFamily: "'DM Sans', sans-serif", fontSize: 14, fontWeight: 700,
+                      cursor: "pointer", flexShrink: 0, letterSpacing: 0.5,
+                    }}>
+                    Resume →
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
           {lastViewerCode && lastViewerCode !== SUPERUSER_DEFAULT_CODE && onWatchLive && (
             <button onClick={() => onWatchLive(lastViewerCode)}
               style={{
