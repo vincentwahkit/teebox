@@ -1228,8 +1228,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [hioRule, setHioRule] = useState(sc?.hioRule ?? true);
   const [ptsVal, setPtsVal] = useState(sc?.ptsVal !== undefined ? sc.ptsVal : 0);
   const [hcpThreshold, setHcpThreshold] = useState(sc?.hcpThreshold ?? 25);
-  // Group Code — optional 4-digit code that links flights together for live highlights.
+  // Live code — optional 4-digit code that makes the round watchable via ViewerMode.
   // When set, Setup propagates to config.groupCode; logRound puts it in rounds_full.group_code.
+  // Internal var name stays groupCode for backward compat with existing data and logic.
   const [groupCode, setGroupCode] = useState(sc?.groupCode || "");
   // groupLookup: { state: "idle"|"loading"|"new"|"existing"|"error", names?: string[] }
   const [groupLookup, setGroupLookup] = useState({ state: "idle" });
@@ -1822,10 +1823,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               </CollapseSect>
             );
           })()}
-          {/* Multi-flight code — optional 4-digit code linking flights for live highlights.
+          {/* Live code — optional 4-digit code that makes the round watchable.
               Auto-collapsed when empty, auto-expanded when set. */}
           <CollapseSect
-            title={groupCode ? `Multi-flight code · ${groupCode}` : "Multi-flight code"}
+            title={groupCode ? `Live code · ${groupCode}` : "Live code"}
             open={activeSection === "multiflight" || (groupCode.length === 4 && activeSection !== "multiflight_collapsed")}
             onToggle={() => {
               if (groupCode.length === 4) {
@@ -1838,7 +1839,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Optional · 4 digits · same code links multiple flights for live highlights</div>
+                <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Optional · 4 digits · makes round watchable. Same code links multiple flights.</div>
               </div>
               <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={4} value={groupCode}
                 onChange={(e) => setGroupCode(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
@@ -3475,7 +3476,120 @@ function TickerScroller({ items, passes = 5, onComplete, renderItem }) {
   );
 }
 
-// VIEWER MODE — read-only leaderboard for a multi-flight group
+// FlightScorecard — read-only hole-by-hole grid for one flight
+// Used inside ViewerMode after the user tags themselves.
+function FlightScorecard({ flight, taggedName, isLight }) {
+  const players = flight.players || [];
+  const gross = flight.gross || [];
+  const inPlay = flight.inPlay || [];
+  const holes = flight.holes || [];
+  const N = players.length;
+  // Totals per player
+  const totals = players.map((_, pi) => {
+    let g = 0, p = 0;
+    for (let hi = 0; hi < Math.min(gross.length, holes.length); hi++) {
+      if (!inPlay[hi]) continue;
+      const score = parseInt(gross[hi]?.[pi], 10) || 0;
+      const par = holes[hi]?.par;
+      if (score > 0 && par) { g += score; p += par; }
+    }
+    return { gross: g, par: p, vsPar: g - p };
+  });
+  // Render: header row (par/SI), then 18 rows for holes, then totals row
+  // Layout: hole# | par | si | p1 | p2 | p3 | p4
+  // To save horizontal space on phone, render front 9 + back 9 separately.
+  const renderNine = (start, label) => (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ background: "var(--card)", padding: "6px 10px", fontFamily: "'Bebas Neue', sans-serif", fontSize: 11, letterSpacing: 3, color: "var(--accent)", borderBottom: "1px solid var(--border2)" }}>
+        {label}
+      </div>
+      <div style={{ overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: isLight ? "#f3f4f6" : "#0b1f0e" }}>
+              <th style={cellHead}>H</th>
+              <th style={cellHead}>PAR</th>
+              {players.map((name, pi) => (
+                <th key={pi} style={{
+                  ...cellHead,
+                  color: name === taggedName ? "var(--accent)" : "var(--text)",
+                  background: name === taggedName ? "rgba(74,222,128,0.1)" : "transparent",
+                }}>{name.slice(0, 4).toUpperCase()}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {Array.from({ length: 9 }, (_, i) => {
+              const hi = start + i;
+              const par = holes[hi]?.par;
+              const isLive = inPlay[hi];
+              return (
+                <tr key={hi} style={{ opacity: isLive ? 1 : 0.45 }}>
+                  <td style={{ ...cell, color: "var(--muted)", fontWeight: 700 }}>{hi + 1}</td>
+                  <td style={{ ...cell, color: "var(--text)" }}>{par || "—"}</td>
+                  {players.map((name, pi) => {
+                    const g = parseInt(gross[hi]?.[pi], 10) || 0;
+                    const isMe = name === taggedName;
+                    let txt = isLive && g > 0 ? String(g) : "—";
+                    let col = "var(--text)";
+                    if (isLive && g > 0 && par) {
+                      if (g <= par - 2) col = "#fbbf24"; // eagle/HIO — gold
+                      else if (g === par - 1) col = "#fbbf24"; // birdie — gold
+                      else if (g === par) col = "var(--text)";
+                      else col = "var(--muted)";
+                    }
+                    return (
+                      <td key={pi} style={{
+                        ...cell,
+                        color: col, fontWeight: 700,
+                        background: isMe ? "rgba(74,222,128,0.06)" : "transparent",
+                      }}>{txt}</td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+  return (
+    <div style={{ padding: "12px 12px 0" }}>
+      {renderNine(0, "FRONT 9")}
+      {renderNine(9, "BACK 9")}
+      {/* Totals strip */}
+      <div style={{
+        marginTop: 4, padding: "10px 12px",
+        background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)",
+        display: "grid", gridTemplateColumns: `60px repeat(${N}, 1fr)`, gap: 6, alignItems: "center",
+      }}>
+        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 12, letterSpacing: 2, color: "var(--accent)" }}>TOTAL</div>
+        {players.map((name, pi) => {
+          const t = totals[pi];
+          const txt = t.vsPar === 0 ? "E" : t.vsPar > 0 ? `+${t.vsPar}` : `−${Math.abs(t.vsPar)}`;
+          const isMe = name === taggedName;
+          return (
+            <div key={pi} style={{ textAlign: "center" }}>
+              <div style={{
+                fontFamily: "'Bebas Neue', sans-serif", fontSize: 22,
+                color: isMe ? "var(--accent)" : (t.vsPar < 0 ? "#fbbf24" : "var(--text)"),
+                lineHeight: 1,
+              }}>{t.gross || "—"}</div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                {t.gross > 0 ? txt : ""}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+const cellHead = { padding: "6px 4px", fontSize: 10, fontWeight: 700, color: "var(--muted)", letterSpacing: 1, textAlign: "center", borderBottom: "1px solid var(--border)", textTransform: "uppercase" };
+const cell = { padding: "6px 4px", textAlign: "center", borderBottom: "1px solid rgba(30,58,30,0.3)" };
+
+// VIEWER MODE — read-only leaderboard for a live round (any number of flights)
 // User-initiated refresh (Refresh button + pull-to-refresh) — no auto-polling.
 // Fetches today's rounds for the given group code, sorts by vs par.
 function ViewerMode({ groupCode, onBack, isLight }) {
@@ -3483,6 +3597,25 @@ function ViewerMode({ groupCode, onBack, isLight }) {
   const [loading, setLoading] = useState(false);
   const [lastFetchedAt, setLastFetchedAt] = useState(0);
   const [error, setError] = useState("");
+  // Identity tag — viewer can tap a player to identify themselves.
+  // Persisted per (groupCode) in localStorage. Stores { name, flightIdx }.
+  const tagKey = `sws_viewer_id_${groupCode}`;
+  const [tagged, setTagged] = useState(() => {
+    try {
+      const raw = localStorage.getItem(tagKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch(_) { return null; }
+  });
+  // Confirmation modal state — null when closed, {name, flightIdx} when prompting
+  const [confirmTag, setConfirmTag] = useState(null);
+  function applyTag(t) {
+    setTagged(t);
+    try {
+      if (t) localStorage.setItem(tagKey, JSON.stringify(t));
+      else localStorage.removeItem(tagKey);
+    } catch(_) {}
+    setConfirmTag(null);
+  }
   async function refresh() {
     setLoading(true);
     setError("");
@@ -3506,6 +3639,11 @@ function ViewerMode({ groupCode, onBack, isLight }) {
           flightLabel: `Flight ${fi + 1}`,
           createdAt: flight.created_at,
           scores,
+          // Raw data for FlightScorecard render
+          gross: fgross,
+          inPlay: fInPlay,
+          holes: fholes,
+          players: fplayers,
         };
       });
       setFlights(result);
@@ -3534,8 +3672,24 @@ function ViewerMode({ groupCode, onBack, isLight }) {
   }
   // Flatten all scores from all flights, sort by vsPar
   const allScores = [];
-  flights.forEach(f => f.scores.forEach(s => allScores.push({ ...s, flightLabel: f.flightLabel })));
+  flights.forEach((f, fi) => f.scores.forEach(s => allScores.push({ ...s, flightLabel: f.flightLabel, flightIdx: fi })));
   allScores.sort((a, b) => a.vsPar - b.vsPar);
+  // Compute tied positions: T2, T2 for ties
+  let lastVsPar = null;
+  let lastPos = 0;
+  allScores.forEach((s, idx) => {
+    if (s.vsPar !== lastVsPar) {
+      s.position = idx + 1;
+      lastPos = idx + 1;
+      lastVsPar = s.vsPar;
+    } else {
+      s.position = lastPos;
+    }
+  });
+  // Mark which positions are tied
+  const posCount = {};
+  allScores.forEach(s => { posCount[s.position] = (posCount[s.position] || 0) + 1; });
+  allScores.forEach(s => { s.isTied = posCount[s.position] > 1; });
   return (
     <div style={S.page}
       className={isLight ? "light-mode" : "dark-mode"}
@@ -3544,74 +3698,268 @@ function ViewerMode({ groupCode, onBack, isLight }) {
         body { background: var(--bg); margin: 0; }
         .light-mode { --bg: #ffffff; --card: #eeeeee; --input: #ffffff; --border: #cccccc; --border2: #888888; --text: #000000; --muted: #333333; --dim: #333333; --neg: #cc0000; --accent: #000000; }
         .dark-mode  { --bg: #0a1a0a; --card: #0d2210; --input: #071507; --border: #1e3a1e; --border2: #2a5a2a; --text: #e8f5e8; --muted: #5a8a5a; --dim: #4a7a4a; --neg: #f87171; --accent: #4ade80; }
+        @keyframes vmLivePulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
+        @keyframes vmRefreshSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .vm-refresh-btn:hover { background: rgba(74, 222, 128, 0.1); box-shadow: 0 0 16px rgba(74, 222, 128, 0.3); }
+        .vm-refresh-btn:active { animation: vmRefreshSpin 0.4s ease; }
       `}</style>
-      {/* Sticky header */}
-      <div style={{ position: "sticky", top: 0, zIndex: 100, background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", maxWidth: 480, margin: "0 auto" }}>
-          <button onClick={onBack} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-            ← Back
-          </button>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 2, fontWeight: 700 }}>WATCH LIVE</div>
-            <div style={{ fontSize: 18, color: "var(--accent)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 4, fontWeight: 700 }}>{groupCode}</div>
+      {/* Broadcast-style header bar */}
+      <div style={{
+        position: "sticky", top: 0, zIndex: 100,
+        background: isLight ? "linear-gradient(180deg, #f5f5f5 0%, #e8e8e8 100%)" : "linear-gradient(180deg, #0d2210 0%, #081608 100%)",
+        borderBottom: `2px solid var(--accent)`,
+      }}>
+        <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={onBack} style={{
+            background: "transparent", border: "1px solid var(--border)", borderRadius: 8,
+            padding: "6px 10px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif",
+            fontSize: 13, fontWeight: 600, cursor: "pointer", flexShrink: 0,
+          }}>←</button>
+          {/* LIVE pill */}
+          <div style={{
+            display: "inline-flex", alignItems: "center", gap: 7,
+            background: "linear-gradient(135deg, #dc2626, #b91c1c)", color: "#fff",
+            padding: "5px 11px", borderRadius: 4,
+            fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, letterSpacing: 3,
+            boxShadow: "0 0 0 1px #ef4444 inset, 0 2px 6px rgba(220,38,38,0.5)",
+            flexShrink: 0,
+          }}>
+            <span style={{ width: 7, height: 7, background: "#fff", borderRadius: "50%", animation: "vmLivePulse 1.4s ease-in-out infinite" }}></span>
+            LIVE
           </div>
-          <button onClick={refresh} disabled={loading} style={{ background: "transparent", border: "1px solid var(--accent)", borderRadius: 10, padding: "8px 16px", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif", fontSize: 22, fontWeight: 700, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.5 : 1, lineHeight: 1 }}>
+          {/* Title block */}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 4, color: "var(--text)", lineHeight: 1, paddingTop: 2 }}>
+              TEEBOX {groupCode}
+            </div>
+            {flights.length > 0 && (
+              <div style={{ fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 10, letterSpacing: 1.5, color: "var(--accent)", textTransform: "uppercase", fontWeight: 700, marginTop: 2 }}>
+                {allScores.length} PLAYER{allScores.length === 1 ? "" : "S"} · {flights.length} FLIGHT{flights.length === 1 ? "" : "S"}
+              </div>
+            )}
+          </div>
+          {/* Refresh button */}
+          <button onClick={refresh} disabled={loading} className="vm-refresh-btn" style={{
+            background: "transparent", color: "var(--accent)", border: "1px solid var(--accent)",
+            width: 38, height: 38, borderRadius: "50%",
+            fontFamily: "'DM Sans', sans-serif", fontSize: 20, fontWeight: 700,
+            cursor: loading ? "wait" : "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+            flexShrink: 0, transition: "all 0.15s", opacity: loading ? 0.5 : 1,
+          }}>
             {loading ? "…" : "↻"}
           </button>
         </div>
       </div>
-      <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 40px" }}>
-        {/* Status line */}
-        <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 14, textAlign: "center", opacity: 0.7 }}>
-          {loading ? "Refreshing…" : `Last updated ${fmtTimeAgo(lastFetchedAt)}`}
-          {flights.length > 0 && ` · ${flights.length} flight${flights.length === 1 ? "" : "s"}`}
-        </div>
+      <div style={{ maxWidth: 480, margin: "0 auto" }}>
         {error && (
-          <div style={{ background: "var(--card)", border: "1px solid var(--neg)", borderRadius: 8, padding: "10px 12px", marginBottom: 14, color: "var(--neg)", fontSize: 13, fontFamily: "'DM Sans', sans-serif", textAlign: "center" }}>
+          <div style={{ background: "var(--card)", border: "1px solid var(--neg)", borderRadius: 8, padding: "10px 12px", margin: "14px 14px 0", color: "var(--neg)", fontSize: 13, fontFamily: "'DM Sans', sans-serif", textAlign: "center" }}>
             {error}
           </div>
         )}
         {/* Empty state */}
-        {!loading && flights.length === 0 && (
-          <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
+        {!loading && flights.length === 0 && !error && (
+          <div style={{ textAlign: "center", padding: "60px 20px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
             <div style={{ marginBottom: 14, display: "flex", justifyContent: "center" }}>
               <TeeBoxLogo size={64} />
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>No active flights</div>
             <div style={{ fontSize: 13, opacity: 0.7 }}>No flights have started logging holes for code {groupCode} today.</div>
-            <div style={{ fontSize: 12, opacity: 0.6, marginTop: 16 }}>Pull down or tap ↻ to check again.</div>
+            <div style={{ fontSize: 12, opacity: 0.6, marginTop: 16 }}>Tap ↻ to check again.</div>
           </div>
         )}
         {/* Leaderboard */}
         {allScores.length > 0 && (
-          <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
+          <>
+            {/* Column headers */}
+            <div style={{
+              display: "grid", gridTemplateColumns: "50px 1fr 70px 80px",
+              padding: "8px 16px", background: "var(--card)",
+              borderBottom: "1px solid var(--border2)",
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: 11, letterSpacing: 3,
+              color: "var(--accent)",
+            }}>
+              <div style={{ textAlign: "center" }}>POS</div>
+              <div style={{ textAlign: "left", paddingLeft: 6 }}>PLAYER</div>
+              <div style={{ textAlign: "center" }}>THRU</div>
+              <div style={{ textAlign: "right" }}>TODAY</div>
+            </div>
+            {/* Rows */}
             {allScores.map((s, idx) => {
               const sign = s.vsPar > 0 ? "+" : "";
-              const txt = s.vsPar === 0 ? "E" : `${sign}${s.vsPar}`;
-              const col = s.vsPar < 0 ? (isLight ? "#16a34a" : "#fbbf24") : s.vsPar === 0 ? "var(--text)" : "var(--text)";
+              const txt = s.vsPar === 0 ? "E" : s.vsPar < 0 ? `−${Math.abs(s.vsPar)}` : `${sign}${s.vsPar}`;
+              const isUnder = s.vsPar < 0;
+              const isOver = s.vsPar > 0;
+              const isFinished = s.lastHole >= 18;
+              const posLabel = s.isTied ? `T${s.position}` : `${s.position}`;
+              // Position chip styling — gold/silver/bronze for top 3
+              let chipStyle = { background: "var(--card)", color: "var(--muted)", border: "1px solid var(--border)" };
+              if (s.position === 1) chipStyle = { background: "linear-gradient(135deg, #fbbf24, #d97706)", color: "#1a1300", border: "1px solid #fbbf24", boxShadow: "0 0 10px rgba(251,191,36,0.4)", fontWeight: 700 };
+              else if (s.position === 2) chipStyle = { background: "linear-gradient(135deg, #e5e7eb, #9ca3af)", color: "#1c1c1c", border: "1px solid #d4d4d8" };
+              else if (s.position === 3) chipStyle = { background: "linear-gradient(135deg, #d97706, #92400e)", color: "#fef3c7", border: "1px solid #b45309" };
+              // Flight tag color
+              const flightColors = ["#4ade80", "#60a5fa", "#fb923c", "#d946ef"];
+              const flightBg = ["rgba(74,222,128,0.15)", "rgba(96,165,250,0.15)", "rgba(249,115,22,0.15)", "rgba(232,121,249,0.15)"];
+              const fIdx = (s.flightIdx || 0) % 4;
+              const isMe = tagged && tagged.name === s.name && tagged.flightIdx === s.flightIdx;
               return (
-                <div key={idx} style={{
-                  display: "grid",
-                  gridTemplateColumns: "32px 1fr 60px 80px",
-                  alignItems: "center",
-                  padding: "12px 14px",
-                  borderBottom: idx < allScores.length - 1 ? "1px solid var(--border)" : "none",
-                  background: idx === 0 ? (isLight ? "#f0fdf4" : "#0d2210") : "transparent",
-                  gap: 10,
-                }}>
-                  <div style={{ fontSize: 14, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: 700, opacity: 0.6 }}>{idx + 1}</div>
-                  <div style={{ fontSize: 15, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</span>
-                    {s.hasBirdie && <span style={{ fontSize: 13 }}>🐦</span>}
+                <div key={idx}
+                  onClick={() => {
+                    // Tap behavior:
+                    // - If already tagged as this player → prompt to untag
+                    // - Otherwise → prompt to tag as this player
+                    setConfirmTag({ name: s.name, flightIdx: s.flightIdx, isUntag: isMe });
+                  }}
+                  style={{
+                    display: "grid", gridTemplateColumns: "50px 1fr 70px 80px",
+                    alignItems: "center", padding: "14px 16px",
+                    borderBottom: idx < allScores.length - 1 ? "1px solid rgba(30,58,30,0.5)" : "none",
+                    background: isMe
+                      ? "linear-gradient(90deg, rgba(74,222,128,0.18), rgba(74,222,128,0.04) 70%)"
+                      : s.isSelf
+                        ? "linear-gradient(90deg, rgba(74,222,128,0.12), transparent 60%)"
+                        : (idx % 2 === 1 ? (isLight ? "#fafafa" : "#0b1f0e") : "transparent"),
+                    borderLeft: isMe ? "3px solid var(--accent)" : (s.isSelf ? "3px solid var(--accent)" : "3px solid transparent"),
+                    position: "relative", cursor: "pointer",
+                  }}>
+                  {/* Position chip */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <div style={{
+                      ...chipStyle,
+                      fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: 1,
+                      width: 38, height: 30,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      borderRadius: 4,
+                    }}>{posLabel}</div>
                   </div>
-                  <div style={{ fontSize: 16, color: col, fontFamily: "'DM Sans', sans-serif", fontWeight: 700, textAlign: "right" }}>{txt}</div>
-                  <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", textAlign: "right", opacity: 0.7 }}>thru {s.lastHole}</div>
+                  {/* Player + flight tag */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 3, paddingLeft: 6, minWidth: 0 }}>
+                    <div style={{
+                      fontFamily: "'DM Sans', sans-serif", fontSize: 16, fontWeight: 700,
+                      color: isMe ? "var(--accent)" : (s.isSelf ? "var(--accent)" : "var(--text)"),
+                      letterSpacing: 1.5, textTransform: "uppercase",
+                      textShadow: (isMe || s.isSelf) ? "0 0 12px rgba(74,222,128,0.3)" : "none",
+                      display: "flex", alignItems: "center", gap: 7,
+                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    }}>
+                      {isMe && <span style={{ fontSize: 14 }}>👤</span>}
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</span>
+                      {s.hasBirdie && <span style={{ fontSize: 14, filter: "drop-shadow(0 0 4px rgba(251,191,36,0.5))" }}>🐦</span>}
+                    </div>
+                    <div>
+                      <span style={{
+                        fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 9, fontWeight: 700,
+                        padding: "2px 5px", borderRadius: 2, letterSpacing: 1,
+                        background: flightBg[fIdx], color: flightColors[fIdx],
+                      }}>F{(s.flightIdx || 0) + 1}</span>
+                    </div>
+                  </div>
+                  {/* THRU */}
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{
+                      fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontWeight: 700, fontSize: 14,
+                      color: isFinished ? "var(--accent)" : "var(--muted)", letterSpacing: 1,
+                    }}>
+                      {isFinished ? "F" : s.lastHole}
+                    </div>
+                    <div style={{ fontFamily: "'DM Sans', sans-serif", fontSize: 9, color: "var(--muted)", letterSpacing: 1, marginTop: 1, fontWeight: 600 }}>
+                      {isFinished ? "FIN" : "HOLES"}
+                    </div>
+                  </div>
+                  {/* TODAY */}
+                  <div style={{
+                    textAlign: "right",
+                    fontFamily: "'Bebas Neue', sans-serif", fontSize: 32, letterSpacing: 1, lineHeight: 0.95,
+                    color: isUnder ? "#fbbf24" : (isLight ? (isOver ? "var(--muted)" : "var(--text)") : (isOver ? "var(--muted)" : "var(--text)")),
+                    textShadow: isUnder ? "0 0 14px rgba(251,191,36,0.4)" : "none",
+                  }}>{txt}</div>
                 </div>
               );
             })}
-          </div>
+            {/* Footer status */}
+            <div style={{
+              background: "var(--card)", padding: "10px 16px",
+              display: "flex", justifyContent: "center",
+              fontSize: 10, fontFamily: "'JetBrains Mono', monospace, 'Courier New'", letterSpacing: 1,
+              color: "var(--muted)", textTransform: "uppercase",
+            }}>
+              {loading ? "REFRESHING…" : `UPDATED ${fmtTimeAgo(lastFetchedAt).toUpperCase()}`}
+            </div>
+            {/* MY FLIGHT scorecard — shown when tagged */}
+            {tagged && (() => {
+              // Find the raw flight data matching tagged.flightIdx
+              const myFlight = flights[tagged.flightIdx];
+              if (!myFlight) {
+                return (
+                  <div style={{ padding: "20px 16px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontSize: 13, opacity: 0.7, textAlign: "center" }}>
+                    Flight data not found. Tap a name on leaderboard to re-tag.
+                  </div>
+                );
+              }
+              return (
+                <div style={{ marginTop: 16, padding: "0 0 24px" }}>
+                  {/* MY FLIGHT header */}
+                  <div style={{
+                    background: "linear-gradient(180deg, #0d2210 0%, #081608 100%)",
+                    borderTop: "2px solid var(--accent)", borderBottom: "1px solid var(--border2)",
+                    padding: "12px 16px",
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                  }}>
+                    <div>
+                      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 18, letterSpacing: 4, color: "var(--text)", lineHeight: 1 }}>
+                        MY FLIGHT
+                      </div>
+                      <div style={{ fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 10, letterSpacing: 1.5, color: "var(--accent)", textTransform: "uppercase", fontWeight: 700, marginTop: 2 }}>
+                        {tagged.name} · F{tagged.flightIdx + 1}
+                      </div>
+                    </div>
+                    <button onClick={() => applyTag(null)} style={{
+                      background: "transparent", border: "1px solid var(--border)",
+                      color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontSize: 11, fontWeight: 600,
+                      padding: "5px 10px", borderRadius: 6, cursor: "pointer", letterSpacing: 1,
+                    }}>UNTAG</button>
+                  </div>
+                  {/* Scorecard grid */}
+                  <FlightScorecard flight={myFlight} taggedName={tagged.name} isLight={isLight} />
+                </div>
+              );
+            })()}
+          </>
         )}
       </div>
+      {/* Confirmation modal — tag/untag */}
+      {confirmTag && (
+        <div onClick={() => setConfirmTag(null)} style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 200,
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: "var(--card)", border: "1px solid var(--accent)", borderRadius: 14,
+            padding: 22, width: "100%", maxWidth: 360, fontFamily: "'DM Sans', sans-serif",
+          }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: "var(--text)", marginBottom: 8, letterSpacing: 1 }}>
+              {confirmTag.isUntag ? "Untag yourself?" : "That's you?"}
+            </div>
+            <div style={{ fontSize: 14, color: "var(--text)", marginBottom: 18, lineHeight: 1.5, opacity: 0.85 }}>
+              {confirmTag.isUntag
+                ? <>Remove your tag as <b style={{ color: "var(--accent)" }}>{confirmTag.name}</b>?</>
+                : <>Tag yourself as <b style={{ color: "var(--accent)" }}>{confirmTag.name}</b> on this device. Your flight's scorecard will appear below the leaderboard.</>
+              }
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setConfirmTag(null)} style={{
+                flex: 1, padding: "11px", fontSize: 13, fontWeight: 600, borderRadius: 8, cursor: "pointer",
+                border: "1px solid var(--border)", background: "transparent", color: "var(--text)",
+                fontFamily: "'DM Sans', sans-serif",
+              }}>Cancel</button>
+              <button onClick={() => applyTag(confirmTag.isUntag ? null : { name: confirmTag.name, flightIdx: confirmTag.flightIdx })} style={{
+                flex: 1, padding: "11px", fontSize: 13, fontWeight: 700, borderRadius: 8, cursor: "pointer",
+                border: "1px solid var(--accent)", background: "var(--accent)", color: "#0a1a0a",
+                fontFamily: "'DM Sans', sans-serif",
+              }}>{confirmTag.isUntag ? "Untag" : "Yes, that's me"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -4219,7 +4567,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   // ─────────────────────────────────────────────────────────────────────────
   // LIVE FLIGHT HIGHLIGHTS (Layer 1)
   // ─────────────────────────────────────────────────────────────────────────
-  // When in a multi-flight group (groupCode set), each in-play hole triggers:
+  // When in a live round (groupCode set), each in-play hole triggers:
   //   1. logRound() — pushes our gross to Supabase
   //   2. fetchOtherFlights() — pulls other flights' gross arrays
   //   3. diff vs prevSnapshot → detect new birdies/eagles/HIO → toast
