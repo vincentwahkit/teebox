@@ -4053,8 +4053,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   const [holeIdx, setHoleIdx] = useState(() => {
     // Resume: jump to last hole user was on (avoids unnecessary NEXT taps that
     // each fire a hole-transition log).
-    const savedIdx = config._savedState?.holeIdx;
-    if (typeof savedIdx === "number" && savedIdx >= 0 && savedIdx < 18) return savedIdx;
+    // Two sources:
+    // - savedScores.holeIdx → set when user pressed 🏠 mid-round (Scorecard → Setup)
+    // - config._savedState.holeIdx → set by autosave (resume from rounds list)
+    const fromHome = config._savedScores?.holeIdx;
+    const fromAuto = config._savedState?.holeIdx;
+    const idx = (typeof fromHome === "number" ? fromHome : fromAuto);
+    if (typeof idx === "number" && idx >= 0 && idx < 18) return idx;
     return 0;
   });
   const [inPlay, setInPlay] = useState(() => savedScores?.inPlay || saved?.inPlay || Array(18).fill(false));
