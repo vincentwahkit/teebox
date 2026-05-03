@@ -1185,7 +1185,7 @@ function SplashContent({ onDone, isLight, isSuperuser, onLogoTap }) {
 }
 
 // SETUP
-function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, isSuperuser, onWatchLive }) {
+function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, isSuperuser, onWatchLive, lastViewerCode }) {
   const sc = savedConfig; // shorthand
   // Round is "in progress" when at least one hole has been played (toggled In Play).
   // Used to lock player count + lineup reorder to prevent score corruption.
@@ -1632,6 +1632,22 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 🗑 New Round
               </button>
             </div>
+          )}
+          {/* Quick re-entry to last watched group */}
+          {lastViewerCode && onWatchLive && (
+            <button onClick={() => onWatchLive(lastViewerCode)}
+              style={{
+                width: "100%", marginBottom: 16, padding: "10px 14px",
+                background: "transparent",
+                border: `1px solid var(--accent)`,
+                borderRadius: 10,
+                color: "var(--accent)",
+                fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 700,
+                letterSpacing: 1, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+              }}>
+              <span>▶</span><span>WATCH LIVE · {lastViewerCode}</span>
+            </button>
           )}
           <Sect title="Players & Handicaps">
             {/* Player count selector */}
@@ -3567,7 +3583,7 @@ function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
             <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 2, fontWeight: 700 }}>WATCH LIVE</div>
             <div style={{ fontSize: 18, color: "var(--accent)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 4, fontWeight: 700 }}>{groupCode}</div>
           </div>
-          <button onClick={refresh} disabled={loading} style={{ background: "transparent", border: "1px solid var(--accent)", borderRadius: 8, padding: "6px 12px", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 700, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.5 : 1 }}>
+          <button onClick={refresh} disabled={loading} style={{ background: "transparent", border: "1px solid var(--accent)", borderRadius: 10, padding: "8px 16px", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif", fontSize: 22, fontWeight: 700, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.5 : 1, lineHeight: 1 }}>
             {loading ? "…" : "↻"}
           </button>
         </div>
@@ -3627,11 +3643,15 @@ function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
             })}
           </div>
         )}
-        {/* Theme toggle at bottom */}
-        <div style={{ display: "flex", justifyContent: "center", marginTop: 24 }}>
-          <button onClick={toggleTheme} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 20, padding: "6px 14px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontSize: 11, cursor: "pointer", letterSpacing: 1 }}>
-            {isLight ? "🌙 Night" : "☀ Day"}
-          </button>
+        {/* Theme toggle at bottom — pill switch style */}
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 24, gap: 10, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", opacity: 0.7 }}>Theme</span>
+          <div onClick={toggleTheme} title={isLight ? "Switch to Night" : "Switch to Day"}
+            style={{ width: 50, height: 26, borderRadius: 13, background: isLight ? "#ffd700" : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
+            <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isLight ? 27 : 2, transition: "left 0.2s", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>
+              {isLight ? "☀" : "🌙"}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -4542,8 +4562,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           </div>
         </div>
       )}
-      {/* Sticky header */}
-      <div style={{ position: "sticky", top: 0, zIndex: 100, background: "var(--card)", borderBottom: "1px solid var(--border)", boxShadow: isLight ? "0 2px 8px rgba(0,0,0,0.1)" : "none" }}>
+      {/* Sticky header — top: 36 so it sits below the live ticker (also sticky at top: 0) */}
+      <div style={{ position: "sticky", top: (scoresTicker || flashItems.length > 0) ? 36 : 0, zIndex: 100, background: "var(--card)", borderBottom: "1px solid var(--border)", boxShadow: isLight ? "0 2px 8px rgba(0,0,0,0.1)" : "none" }}>
           <div style={{ height: 3, background: "var(--border)" }}>
           <div style={{ height: "100%", width: `${(completedCount/18)*100}%`, background: COLORS[0], transition: "width 0.4s ease" }} />
         </div>
@@ -6703,6 +6723,9 @@ export default function App() {
   const [savedScores, setSavedScores] = useState(null);
   const [savedConfig, setSavedConfig] = useState(null);
   const [viewerCode, setViewerCode] = useState(null); // when set, App routes to ViewerMode
+  const [lastViewerCode, setLastViewerCode] = useState(() => {
+    try { return localStorage.getItem("sws_last_viewer_code") || null; } catch(_) { return null; }
+  });
   const [showSplash, setShowSplash] = useState(true);
   const [savedRounds, setSavedRounds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("sws_rounds") || "[]"); } catch { return []; }
@@ -6779,7 +6802,7 @@ export default function App() {
         ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
         : viewerCode
           ? <ViewerMode groupCode={viewerCode} onBack={() => setViewerCode(null)} isLight={isLight} toggleTheme={toggleTheme} />
-          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => setViewerCode(code)} />
+          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => { setViewerCode(code); setLastViewerCode(code); try { localStorage.setItem("sws_last_viewer_code", code); } catch(_) {} }} lastViewerCode={lastViewerCode} />
       }
     </>
   );
