@@ -207,6 +207,36 @@ function nettScore(gross, hcp, si, par) {
   if (isNaN(g) || g <= 0) return null;
   return g - strokesGiven(hcp, si);
 }
+// Top-level helper: compute vsPar + lastHole + birdie flag for each player in a flight.
+// Used by both Scorecard's live ticker and ViewerMode's leaderboard.
+function computeFlightScores(grossArr, inPlayArr, holesArr, names, isSelf) {
+  const N = (grossArr[0] || []).length;
+  const out = [];
+  for (let pi = 0; pi < N; pi++) {
+    let grossSum = 0, parSum = 0, lastHole = 0;
+    let hasBirdie = false;
+    for (let hi = 0; hi < Math.min(grossArr.length, holesArr.length); hi++) {
+      if (!inPlayArr[hi]) continue;
+      const g = parseInt(grossArr[hi]?.[pi], 10) || 0;
+      const p = holesArr[hi]?.par;
+      if (g > 0 && p) {
+        grossSum += g;
+        parSum += p;
+        if (hi + 1 > lastHole) lastHole = hi + 1;
+        if (g <= p - 1) hasBirdie = true;
+      }
+    }
+    if (lastHole === 0) continue;
+    out.push({
+      name: names[pi] || `P${pi+1}`,
+      vsPar: grossSum - parSum,
+      lastHole,
+      isSelf: !!isSelf,
+      hasBirdie,
+    });
+  }
+  return out;
+}
 function vegasNum(n1, n2) {
   if (n1 === null || n2 === null) return null;
   const lo = Math.min(Math.min(n1, 9), Math.min(n2, 9));
@@ -1155,7 +1185,7 @@ function SplashContent({ onDone, isLight, isSuperuser, onLogoTap }) {
 }
 
 // SETUP
-function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, isSuperuser }) {
+function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, isSuperuser, onWatchLive }) {
   const sc = savedConfig; // shorthand
   // Round is "in progress" when at least one hole has been played (toggled In Play).
   // Used to lock player count + lineup reorder to prevent score corruption.
@@ -1776,12 +1806,23 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               </CollapseSect>
             );
           })()}
-          {/* Group Code — optional 4-digit code linking flights for live highlights */}
-          <div style={{ marginBottom: 16, padding: "12px 14px", background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12 }}>
+          {/* Multi-flight code — optional 4-digit code linking flights for live highlights.
+              Auto-collapsed when empty, auto-expanded when set. */}
+          <CollapseSect
+            title={groupCode ? `Multi-flight code · ${groupCode}` : "Multi-flight code"}
+            open={activeSection === "multiflight" || (groupCode.length === 4 && activeSection !== "multiflight_collapsed")}
+            onToggle={() => {
+              if (groupCode.length === 4) {
+                // When code is set, manual collapse uses a special key to override auto-open
+                setActiveSection(s => s === "multiflight_collapsed" ? "multiflight" : "multiflight_collapsed");
+              } else {
+                setActiveSection(s => s === "multiflight" ? null : "multiflight");
+              }
+            }}
+          >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 15, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>Group code</div>
-                <div style={{ fontSize: 11, color: "var(--text)", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>Optional · 4 digits · same code links flights for live highlights</div>
+                <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>Optional · 4 digits · same code links multiple flights for live highlights</div>
               </div>
               <input type="tel" inputMode="numeric" pattern="[0-9]*" maxLength={4} value={groupCode}
                 onChange={(e) => setGroupCode(e.target.value.replace(/[^0-9]/g, "").slice(0, 4))}
@@ -1806,7 +1847,24 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 {groupLookup.state === "error" && <span style={{ color: "var(--neg)" }}>Couldn't check group</span>}
               </div>
             )}
-          </div>
+            {/* Watch Live — view-only leaderboard for this group code (no round started) */}
+            {groupCode.length === 4 && onWatchLive && (
+              <button
+                onClick={() => onWatchLive(groupCode)}
+                style={{
+                  width: "100%", marginTop: 12, padding: "12px",
+                  background: "transparent",
+                  border: `1px solid var(--accent)`,
+                  borderRadius: 10,
+                  color: "var(--accent)",
+                  fontFamily: "'DM Sans', sans-serif", fontSize: 14, fontWeight: 700,
+                  letterSpacing: 1, cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                }}>
+                <span>▶</span><span>WATCH LIVE</span>
+              </button>
+            )}
+          </CollapseSect>
           {/* ── Games & Stakes — collapsible ── */}
           <CollapseSect title="Games & Stakes" open={activeSection==="games"} onToggle={() => setActiveSection(s => s==="games" ? null : "games")}>
             {/* Vegas Players — only shown when N > 4 */}
@@ -3401,6 +3459,185 @@ function TickerScroller({ items, passes = 5, onComplete, renderItem }) {
   );
 }
 
+// VIEWER MODE — read-only leaderboard for a multi-flight group
+// User-initiated refresh (Refresh button + pull-to-refresh) — no auto-polling.
+// Fetches today's rounds for the given group code, sorts by vs par.
+function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
+  const [flights, setFlights] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [lastFetchedAt, setLastFetchedAt] = useState(0);
+  const [error, setError] = useState("");
+  // Pull-to-refresh
+  const touchStartYRef = React.useRef(null);
+  const touchPullRef = React.useRef(0);
+  const [pullDistance, setPullDistance] = useState(0);
+  async function refresh() {
+    setLoading(true);
+    setError("");
+    try {
+      const todaySGT = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" });
+      const sinceParam = `&created_at=gte.${todaySGT}T00:00:00%2B08:00`;
+      const url = `${SUPA_URL_BASE}/rounds_full?group_code=eq.${encodeURIComponent(groupCode)}&total_holes_played=gt.0${sinceParam}&order=created_at.desc&limit=20`;
+      const res = await fetch(url, { headers: SUPA_HDR });
+      if (!res.ok) throw new Error("Network error");
+      const data = await res.json();
+      // Compute scores per flight
+      const result = data.map((flight, fi) => {
+        const fgross = flight.gross || [];
+        const fInPlay = flight.in_play || [];
+        const fholes = flight.course_holes || [];
+        const fplayers = (flight.players || []).map(p => p?.name || "");
+        const scores = computeFlightScores(fgross, fInPlay, fholes, fplayers, false);
+        return {
+          roundId: flight.round_id,
+          courseName: flight.course_name || "Round",
+          flightLabel: `Flight ${fi + 1}`,
+          createdAt: flight.created_at,
+          scores,
+        };
+      });
+      setFlights(result);
+      setLastFetchedAt(Date.now());
+    } catch (e) {
+      setError("Couldn't fetch — " + (e.message || "try again"));
+    } finally {
+      setLoading(false);
+    }
+  }
+  // Auto-fetch on mount
+  React.useEffect(() => { refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Tick every 30s to update "last updated X ago" text without auto-fetching
+  const [, setTick] = useState(0);
+  React.useEffect(() => {
+    const t = setInterval(() => setTick(x => x + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+  function fmtTimeAgo(ts) {
+    if (!ts) return "—";
+    const sec = Math.floor((Date.now() - ts) / 1000);
+    if (sec < 5) return "just now";
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec/60)} min ago`;
+    return `${Math.floor(sec/3600)}h ago`;
+  }
+  // Flatten all scores from all flights, sort by vsPar
+  const allScores = [];
+  flights.forEach(f => f.scores.forEach(s => allScores.push({ ...s, flightLabel: f.flightLabel })));
+  allScores.sort((a, b) => a.vsPar - b.vsPar);
+  // Pull-to-refresh handlers
+  function handleTouchStart(e) {
+    if (window.scrollY === 0) {
+      touchStartYRef.current = e.touches[0].clientY;
+      touchPullRef.current = 0;
+    }
+  }
+  function handleTouchMove(e) {
+    if (touchStartYRef.current == null) return;
+    const dy = e.touches[0].clientY - touchStartYRef.current;
+    if (dy > 0 && window.scrollY === 0) {
+      touchPullRef.current = Math.min(80, dy * 0.5);
+      setPullDistance(touchPullRef.current);
+    }
+  }
+  function handleTouchEnd() {
+    if (touchPullRef.current > 50) {
+      refresh();
+    }
+    touchStartYRef.current = null;
+    touchPullRef.current = 0;
+    setPullDistance(0);
+  }
+  return (
+    <div style={S.page}
+      className={isLight ? "light-mode" : "dark-mode"}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      <style>{`
+        body { background: var(--bg); }
+      `}</style>
+      {/* Sticky header */}
+      <div style={{ position: "sticky", top: 0, zIndex: 100, background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", maxWidth: 480, margin: "0 auto" }}>
+          <button onClick={onBack} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 8, padding: "6px 12px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            ← Back
+          </button>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 2, fontWeight: 700 }}>WATCH LIVE</div>
+            <div style={{ fontSize: 18, color: "var(--accent)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 4, fontWeight: 700 }}>{groupCode}</div>
+          </div>
+          <button onClick={refresh} disabled={loading} style={{ background: "transparent", border: "1px solid var(--accent)", borderRadius: 8, padding: "6px 12px", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 700, cursor: loading ? "wait" : "pointer", opacity: loading ? 0.5 : 1 }}>
+            {loading ? "…" : "↻"}
+          </button>
+        </div>
+      </div>
+      {/* Pull-to-refresh indicator */}
+      {pullDistance > 0 && (
+        <div style={{ height: pullDistance, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", fontSize: 13, fontFamily: "'DM Sans', sans-serif" }}>
+          {pullDistance > 50 ? "↻ Release to refresh" : "↓ Pull to refresh"}
+        </div>
+      )}
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 40px" }}>
+        {/* Status line */}
+        <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 14, textAlign: "center", opacity: 0.7 }}>
+          {loading ? "Refreshing…" : `Last updated ${fmtTimeAgo(lastFetchedAt)}`}
+          {flights.length > 0 && ` · ${flights.length} flight${flights.length === 1 ? "" : "s"}`}
+        </div>
+        {error && (
+          <div style={{ background: "var(--card)", border: "1px solid var(--neg)", borderRadius: 8, padding: "10px 12px", marginBottom: 14, color: "var(--neg)", fontSize: 13, fontFamily: "'DM Sans', sans-serif", textAlign: "center" }}>
+            {error}
+          </div>
+        )}
+        {/* Empty state */}
+        {!loading && flights.length === 0 && (
+          <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
+            <div style={{ fontSize: 40, marginBottom: 10 }}>⛳</div>
+            <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>No active flights</div>
+            <div style={{ fontSize: 13, opacity: 0.7 }}>No flights have started logging holes for code {groupCode} today.</div>
+            <div style={{ fontSize: 12, opacity: 0.6, marginTop: 16 }}>Pull down or tap ↻ to check again.</div>
+          </div>
+        )}
+        {/* Leaderboard */}
+        {allScores.length > 0 && (
+          <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 12, overflow: "hidden" }}>
+            {allScores.map((s, idx) => {
+              const sign = s.vsPar > 0 ? "+" : "";
+              const txt = s.vsPar === 0 ? "E" : `${sign}${s.vsPar}`;
+              const col = s.vsPar < 0 ? (isLight ? "#16a34a" : "#fbbf24") : s.vsPar === 0 ? "var(--text)" : "var(--text)";
+              return (
+                <div key={idx} style={{
+                  display: "grid",
+                  gridTemplateColumns: "32px 1fr 60px 80px",
+                  alignItems: "center",
+                  padding: "12px 14px",
+                  borderBottom: idx < allScores.length - 1 ? "1px solid var(--border)" : "none",
+                  background: idx === 0 ? (isLight ? "#f0fdf4" : "#0d2210") : "transparent",
+                  gap: 10,
+                }}>
+                  <div style={{ fontSize: 14, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: 700, opacity: 0.6 }}>{idx + 1}</div>
+                  <div style={{ fontSize: 15, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</span>
+                    {s.hasBirdie && <span style={{ fontSize: 13 }}>🐦</span>}
+                  </div>
+                  <div style={{ fontSize: 16, color: col, fontFamily: "'DM Sans', sans-serif", fontWeight: 700, textAlign: "right" }}>{txt}</div>
+                  <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", textAlign: "right", opacity: 0.7 }}>thru {s.lastHole}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {/* Theme toggle at bottom */}
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 24 }}>
+          <button onClick={toggleTheme} style={{ background: "transparent", border: "1px solid var(--border)", borderRadius: 20, padding: "6px 14px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontSize: 11, cursor: "pointer", letterSpacing: 1 }}>
+            {isLight ? "🌙 Night" : "☀ Day"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // SCORECARD
 function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }) {
   const { names, hcps, holes, games, bankerNett = true, hcpCap = null, vegasRules = "council", hioRule = true, capPar3 = 3, capOther = 4 } = config;
@@ -3976,11 +4213,19 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     };
   }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, holes, vegasVal, ctVal, p3Val, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments, dollarsTotal, dollars, vegasCum, ctCum, p3Cum, ptsCum]);
   // Log helper — writes to both tables
+  // Skip-if-unchanged: track last-sent payload hash to avoid wasting Supabase
+  // sequence numbers + bandwidth on identical payloads (e.g. toggle-off-toggle-on
+  // refresh trick, or score correction loops landing on the same final value).
+  const lastPayloadHashRef = React.useRef(null);
   const logRound = React.useCallback(() => {
     if (isLocked) return; // view-only — don't overwrite historical rounds
     const { logBasic, logFull } = buildFullPayload();
     // Skip if nothing meaningful to log (no holes in play yet)
     if ((logFull.total_holes_played || 0) === 0) return;
+    // Skip if payload hasn't changed since last upsert
+    const hash = JSON.stringify(logFull);
+    if (hash === lastPayloadHashRef.current) return;
+    lastPayloadHashRef.current = hash;
     const rid = logBasic.round_id;
     supaUpsert("rounds_log", rid, logBasic);
     supaUpsert("rounds_full", rid, logFull);
@@ -4053,33 +4298,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     const id = Date.now() + Math.random();
     setFlashItems(prev => [...prev, { id, emoji, text, expiresAt: Date.now() + 15000 }]);
     playChime();
-  }
-  // Helper: compute vsPar + lastHole for a flight's gross + in_play + holes
-  function computeFlightScores(grossArr, inPlayArr, holesArr, names, isSelf) {
-    const N = (grossArr[0] || []).length;
-    const out = [];
-    for (let pi = 0; pi < N; pi++) {
-      let grossSum = 0, parSum = 0, lastHole = 0;
-      for (let hi = 0; hi < Math.min(grossArr.length, holesArr.length); hi++) {
-        if (!inPlayArr[hi]) continue;
-        const g = parseInt(grossArr[hi]?.[pi], 10) || 0;
-        const p = holesArr[hi]?.par;
-        if (g > 0 && p) {
-          grossSum += g;
-          parSum += p;
-          if (hi + 1 > lastHole) lastHole = hi + 1;
-        }
-      }
-      if (lastHole === 0) continue; // no holes played yet
-      const vsPar = grossSum - parSum;
-      out.push({
-        name: names[pi] || `P${pi+1}`,
-        vsPar,
-        lastHole,
-        isSelf: !!isSelf,
-      });
-    }
-    return out;
   }
   async function fetchOtherFlightsAndDiff() {
     if (!groupCode || !prevSnapshotRef.current) return;
@@ -6484,6 +6702,7 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [savedScores, setSavedScores] = useState(null);
   const [savedConfig, setSavedConfig] = useState(null);
+  const [viewerCode, setViewerCode] = useState(null); // when set, App routes to ViewerMode
   const [showSplash, setShowSplash] = useState(true);
   const [savedRounds, setSavedRounds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("sws_rounds") || "[]"); } catch { return []; }
@@ -6558,7 +6777,9 @@ export default function App() {
       )}
       {config
         ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
-        : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} />
+        : viewerCode
+          ? <ViewerMode groupCode={viewerCode} onBack={() => setViewerCode(null)} isLight={isLight} toggleTheme={toggleTheme} />
+          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => setViewerCode(code)} />
       }
     </>
   );
