@@ -4050,7 +4050,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     }
     return Array.from({length:18}, () => Array(N).fill(1));
   });
-  const [holeIdx, setHoleIdx] = useState(0);
+  const [holeIdx, setHoleIdx] = useState(() => {
+    // Resume: jump to last hole user was on (avoids unnecessary NEXT taps that
+    // each fire a hole-transition log).
+    const savedIdx = config._savedState?.holeIdx;
+    if (typeof savedIdx === "number" && savedIdx >= 0 && savedIdx < 18) return savedIdx;
+    return 0;
+  });
   const [inPlay, setInPlay] = useState(() => savedScores?.inPlay || saved?.inPlay || Array(18).fill(false));
   const [roundStartTime, setRoundStartTime] = useState(() => saved?.roundStartTime || null);
   const [liveHcps, setLiveHcps] = useState(() => saved?.liveHcps ? [...saved.liveHcps] : [...hcps]);
