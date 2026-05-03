@@ -6,6 +6,12 @@ const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
 const APP_VERSION = "vw-1.2.2";
 
+// Catch-all "Live code" used silently when user doesn't set one.
+// Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
+// and superuser can spectate any round. Regular users are blocked from entering
+// this code in Setup. Only superuser can enter it in WATCH LIVE viewer.
+const SUPERUSER_DEFAULT_CODE = "0000";
+
 // Device ID: persistent random UUID per install. Used to group rounds without auth.
 function getDeviceId() {
   try {
@@ -1235,7 +1241,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   // groupLookup: { state: "idle"|"loading"|"new"|"existing"|"error", names?: string[] }
   const [groupLookup, setGroupLookup] = useState({ state: "idle" });
   React.useEffect(() => {
-    if (!groupCode || groupCode.length !== 4) { setGroupLookup({ state: "idle" }); return; }
+    if (!groupCode || groupCode.length !== 4 || groupCode === SUPERUSER_DEFAULT_CODE) { setGroupLookup({ state: "idle" }); return; }
     setGroupLookup({ state: "loading" });
     const t = setTimeout(async () => {
       try {
@@ -1650,6 +1656,23 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               <span>▶</span><span>WATCH LIVE · {lastViewerCode}</span>
             </button>
           )}
+          {/* Superuser: spectate the catch-all bucket (rounds with no user-set Live code) */}
+          {isSuperuser && onWatchLive && (
+            <button onClick={() => onWatchLive(SUPERUSER_DEFAULT_CODE)}
+              style={{
+                width: "100%", marginBottom: 16, padding: "10px 14px",
+                background: "transparent",
+                border: `1px dashed var(--accent)`,
+                borderRadius: 10,
+                color: "var(--accent)",
+                fontFamily: "'DM Sans', sans-serif", fontSize: 12, fontWeight: 600,
+                letterSpacing: 1, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                opacity: 0.85,
+              }}>
+              <span>🛡️</span><span>WATCH ALL · ALL FLIGHTS TODAY</span>
+            </button>
+          )}
           <Sect title="Players & Handicaps">
             {/* Player count selector */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -1846,7 +1869,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 placeholder="—"
                 style={{ width: 84, textAlign: "center", padding: "10px 6px", fontSize: 18, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", color: "var(--accent)", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, letterSpacing: 4 }} />
             </div>
-            {groupCode.length === 4 && (
+            {groupCode === SUPERUSER_DEFAULT_CODE && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
+                <span style={{ color: "var(--neg)", fontWeight: "600" }}>⚠ {SUPERUSER_DEFAULT_CODE} is reserved · pick another code</span>
+              </div>
+            )}
+            {groupCode.length === 4 && groupCode !== SUPERUSER_DEFAULT_CODE && (
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>
                 {groupLookup.state === "loading" && <span style={{ color: "var(--text)" }}>Checking…</span>}
                 {groupLookup.state === "new" && (
@@ -1865,7 +1893,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               </div>
             )}
             {/* Watch Live — view-only leaderboard for this group code (no round started) */}
-            {groupCode.length === 4 && onWatchLive && (
+            {groupCode.length === 4 && groupCode !== SUPERUSER_DEFAULT_CODE && onWatchLive && (
               <button
                 onClick={() => onWatchLive(groupCode)}
                 style={{
@@ -2681,6 +2709,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             const dups = Object.keys(siCounts).filter(si=>siCounts[si]>1).map(Number);
             if (dups.length > 0) {
               setStartError(`Duplicate SI: ${dups.sort((a,b)=>a-b).join(", ")} — fix in Course setup`);
+              setTimeout(() => setStartError(""), 3000);
+              return;
+            }
+            if (groupCode === SUPERUSER_DEFAULT_CODE) {
+              setStartError(`${SUPERUSER_DEFAULT_CODE} is reserved — pick another Live code or leave it blank`);
               setTimeout(() => setStartError(""), 3000);
               return;
             }
@@ -4505,7 +4538,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         app_version: APP_VERSION,
         course_name: config.courseName || "Custom",
         course_holes: holes,
-        group_code: config.groupCode || null,
+        group_code: (config.groupCode && config.groupCode.trim()) || SUPERUSER_DEFAULT_CODE,
         player_count: N,
         players: playersArr,
         games_enabled: games,
@@ -4597,6 +4630,11 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   // Stores: array of { name, color, vsPar, lastHole } per player from all flights.
   const [scoresTicker, setScoresTicker] = useState(null); // null = hidden, [] = empty pass, [{...}] = showing
   const groupCode = (config.groupCode || "").trim();
+  // Effective code used for logging — falls back to superuser default if user didn't set one.
+  // This means EVERY round logs per-hole to Supabase. The user-set groupCode still gates
+  // visible UI features (live ticker, celebration toasts) so regular users don't see other
+  // no-code rounds in their experience. Only superuser can spectate the catch-all bucket.
+  const effectiveGroupCode = groupCode || SUPERUSER_DEFAULT_CODE;
   const todayKey = React.useMemo(() => new Date().toISOString().slice(0, 10), []);
   const snapshotKey = groupCode ? `sws_highlights_${groupCode}_${todayKey}` : null;
   const prevSnapshotRef = React.useRef(null);
@@ -4701,26 +4739,45 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   // Per-hole-transition trigger: log when user navigates AWAY from a hole
   // (PREV/NEXT/swipe/pill tap all change holeIdx). Captures the score they
   // just finished entering.
-  // Skipped if no group code (no need to broadcast or watch).
+  // ALWAYS logs (uses effectiveGroupCode = user code OR superuser default).
+  // Only fetches other flights if user explicitly set a groupCode (avoid
+  // spamming the catch-all bucket fetch — that's superuser-only).
   // Skipped if isLocked (view-only).
   const lastHoleIdxRef = React.useRef(holeIdx);
   React.useEffect(() => {
     if (lastHoleIdxRef.current === holeIdx) return;
     lastHoleIdxRef.current = holeIdx;
-    if (!groupCode) return;
     if (isLocked) return;
     // Small delay for state to settle before reading
     const t = setTimeout(() => {
       logRound();
-      fetchOtherFlightsAndDiff();
+      if (groupCode) fetchOtherFlightsAndDiff();
     }, 200);
     return () => clearTimeout(t);
-  }, [holeIdx, groupCode, isLocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holeIdx, isLocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Group code change trigger: fires whenever groupCode changes during the
+  // Scorecard's lifetime, AND on initial mount (because user may have changed
+  // the code via 🏠 → Setup → resume, which remounts Scorecard with the new
+  // value but the ref-comparison would otherwise skip).
+  // The skip-if-unchanged hash guard in logRound prevents redundant upserts if
+  // nothing else changed.
+  const lastGroupCodeRef = React.useRef("__init__");
+  React.useEffect(() => {
+    if (lastGroupCodeRef.current === groupCode) return;
+    lastGroupCodeRef.current = groupCode;
+    if (isLocked) return;
+    // Small delay for state to settle
+    const t = setTimeout(() => {
+      logRound();
+      if (groupCode) fetchOtherFlightsAndDiff();
+    }, 200);
+    return () => clearTimeout(t);
+  }, [groupCode, isLocked]); // eslint-disable-line react-hooks/exhaustive-deps
   // Safety-net trigger: log when app is backgrounded (visibilitychange to hidden,
   // pagehide). This catches the case where user closes/swipes-away the app
   // mid-hole before reaching a hole transition.
+  // ALWAYS active (no groupCode check) — every round benefits from this.
   React.useEffect(() => {
-    if (!groupCode) return;
     if (isLocked) return;
     const onHide = () => {
       if (document.visibilityState === "hidden") logRound();
@@ -4732,7 +4789,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       document.removeEventListener("visibilitychange", onHide);
       window.removeEventListener("pagehide", onPageHide);
     };
-  }, [groupCode, isLocked, logRound]);
+  }, [isLocked, logRound]);
   const frontPlayed = inPlay.slice(0,9).filter(Boolean).length;
   const backPlayed = inPlay.slice(9,18).filter(Boolean).length;
   const firstNine = frontPlayed >= backPlayed ? "F" : "B";
