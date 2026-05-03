@@ -7173,6 +7173,17 @@ export default function App() {
       // Migrate: if previously persisted as 0000 (superuser default), clear it.
       if (v === SUPERUSER_DEFAULT_CODE) {
         localStorage.removeItem("sws_last_viewer_code");
+        localStorage.removeItem("sws_last_viewer_at");
+        return null;
+      }
+      // Expire stale viewer codes — quick re-entry shortcut only valid for ~15 min
+      // after closing the viewer. After that, user goes through Live code panel.
+      // Also clear legacy entries that have no timestamp (pre-fix data).
+      const at = parseInt(localStorage.getItem("sws_last_viewer_at") || "0", 10);
+      const FIFTEEN_MIN = 15 * 60 * 1000;
+      if (v && (!at || (Date.now() - at) > FIFTEEN_MIN)) {
+        localStorage.removeItem("sws_last_viewer_code");
+        localStorage.removeItem("sws_last_viewer_at");
         return null;
       }
       return v || null;
@@ -7253,14 +7264,23 @@ export default function App() {
       {config
         ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
         : viewerCode
-          ? <ViewerMode groupCode={viewerCode} onBack={() => setViewerCode(null)} isLight={isLight} />
+          ? <ViewerMode groupCode={viewerCode} onBack={() => {
+              // Bump timestamp on exit so the 15-min quick-return window starts now
+              if (viewerCode && viewerCode !== SUPERUSER_DEFAULT_CODE) {
+                try { localStorage.setItem("sws_last_viewer_at", String(Date.now())); } catch(_) {}
+              }
+              setViewerCode(null);
+            }} isLight={isLight} />
           : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => {
               setViewerCode(code);
               // Only persist as "lastViewerCode" if it's a normal user-entered code.
               // The superuser default code (0000) is never offered as a quick re-entry button.
               if (code !== SUPERUSER_DEFAULT_CODE) {
                 setLastViewerCode(code);
-                try { localStorage.setItem("sws_last_viewer_code", code); } catch(_) {}
+                try {
+                  localStorage.setItem("sws_last_viewer_code", code);
+                  localStorage.setItem("sws_last_viewer_at", String(Date.now()));
+                } catch(_) {}
               }
             }} lastViewerCode={lastViewerCode} />
       }
