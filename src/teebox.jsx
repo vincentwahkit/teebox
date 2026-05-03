@@ -3478,15 +3478,11 @@ function TickerScroller({ items, passes = 5, onComplete, renderItem }) {
 // VIEWER MODE — read-only leaderboard for a multi-flight group
 // User-initiated refresh (Refresh button + pull-to-refresh) — no auto-polling.
 // Fetches today's rounds for the given group code, sorts by vs par.
-function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
+function ViewerMode({ groupCode, onBack, isLight }) {
   const [flights, setFlights] = useState([]);
   const [loading, setLoading] = useState(false);
   const [lastFetchedAt, setLastFetchedAt] = useState(0);
   const [error, setError] = useState("");
-  // Pull-to-refresh
-  const touchStartYRef = React.useRef(null);
-  const touchPullRef = React.useRef(0);
-  const [pullDistance, setPullDistance] = useState(0);
   async function refresh() {
     setLoading(true);
     setError("");
@@ -3540,35 +3536,9 @@ function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
   const allScores = [];
   flights.forEach(f => f.scores.forEach(s => allScores.push({ ...s, flightLabel: f.flightLabel })));
   allScores.sort((a, b) => a.vsPar - b.vsPar);
-  // Pull-to-refresh handlers
-  function handleTouchStart(e) {
-    if (window.scrollY === 0) {
-      touchStartYRef.current = e.touches[0].clientY;
-      touchPullRef.current = 0;
-    }
-  }
-  function handleTouchMove(e) {
-    if (touchStartYRef.current == null) return;
-    const dy = e.touches[0].clientY - touchStartYRef.current;
-    if (dy > 0 && window.scrollY === 0) {
-      touchPullRef.current = Math.min(80, dy * 0.5);
-      setPullDistance(touchPullRef.current);
-    }
-  }
-  function handleTouchEnd() {
-    if (touchPullRef.current > 50) {
-      refresh();
-    }
-    touchStartYRef.current = null;
-    touchPullRef.current = 0;
-    setPullDistance(0);
-  }
   return (
     <div style={S.page}
       className={isLight ? "light-mode" : "dark-mode"}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
     >
       <style>{`
         body { background: var(--bg); margin: 0; }
@@ -3590,12 +3560,6 @@ function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
           </button>
         </div>
       </div>
-      {/* Pull-to-refresh indicator */}
-      {pullDistance > 0 && (
-        <div style={{ height: pullDistance, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", fontSize: 13, fontFamily: "'DM Sans', sans-serif" }}>
-          {pullDistance > 50 ? "↻ Release to refresh" : "↓ Pull to refresh"}
-        </div>
-      )}
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 40px" }}>
         {/* Status line */}
         <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 14, textAlign: "center", opacity: 0.7 }}>
@@ -3647,16 +3611,6 @@ function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
             })}
           </div>
         )}
-        {/* Theme toggle at bottom — pill switch style */}
-        <div style={{ display: "flex", justifyContent: "center", marginTop: 24, gap: 10, alignItems: "center" }}>
-          <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", opacity: 0.7 }}>Theme</span>
-          <div onClick={toggleTheme} title={isLight ? "Switch to Night" : "Switch to Day"}
-            style={{ width: 50, height: 26, borderRadius: 13, background: isLight ? "#ffd700" : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
-            <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 2, left: isLight ? 27 : 2, transition: "left 0.2s", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>
-              {isLight ? "☀" : "🌙"}
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -6800,7 +6754,7 @@ export default function App() {
       {config
         ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
         : viewerCode
-          ? <ViewerMode groupCode={viewerCode} onBack={() => setViewerCode(null)} isLight={isLight} toggleTheme={toggleTheme} />
+          ? <ViewerMode groupCode={viewerCode} onBack={() => setViewerCode(null)} isLight={isLight} />
           : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => { setViewerCode(code); setLastViewerCode(code); try { localStorage.setItem("sws_last_viewer_code", code); } catch(_) {} }} lastViewerCode={lastViewerCode} />
       }
     </>
