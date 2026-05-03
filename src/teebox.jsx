@@ -3899,7 +3899,7 @@ function ViewerMode({ groupCode, onBack, isLight }) {
                 <div style={{ marginTop: 16, padding: "0 0 24px" }}>
                   {/* MY FLIGHT header */}
                   <div style={{
-                    background: "linear-gradient(180deg, #0d2210 0%, #081608 100%)",
+                    background: isLight ? "linear-gradient(180deg, #f5f5f5 0%, #e8e8e8 100%)" : "linear-gradient(180deg, #0d2210 0%, #081608 100%)",
                     borderTop: "2px solid var(--accent)", borderBottom: "1px solid var(--border2)",
                     padding: "12px 16px",
                     display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -3953,7 +3953,7 @@ function ViewerMode({ groupCode, onBack, isLight }) {
               }}>Cancel</button>
               <button onClick={() => applyTag(confirmTag.isUntag ? null : { name: confirmTag.name, flightIdx: confirmTag.flightIdx })} style={{
                 flex: 1, padding: "11px", fontSize: 13, fontWeight: 700, borderRadius: 8, cursor: "pointer",
-                border: "1px solid var(--accent)", background: "var(--accent)", color: "#0a1a0a",
+                border: "1px solid var(--accent)", background: "var(--accent)", color: isLight ? "#fff" : "#0a1a0a",
                 fontFamily: "'DM Sans', sans-serif",
               }}>{confirmTag.isUntag ? "Untag" : "Yes, that's me"}</button>
             </div>
@@ -4690,23 +4690,41 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       }
     } catch (_) {}
   }
-  // Per-hole trigger: when an inPlay flag changes, log and fetch.
+  // Per-hole-transition trigger: log when user navigates AWAY from a hole
+  // (PREV/NEXT/swipe/pill tap all change holeIdx). Captures the score they
+  // just finished entering.
   // Skipped if no group code (no need to broadcast or watch).
   // Skipped if isLocked (view-only).
-  const inPlayKey = inPlay.join(",");
-  const lastInPlayKeyRef = React.useRef(inPlayKey);
+  const lastHoleIdxRef = React.useRef(holeIdx);
   React.useEffect(() => {
-    if (lastInPlayKeyRef.current === inPlayKey) return;
-    lastInPlayKeyRef.current = inPlayKey;
+    if (lastHoleIdxRef.current === holeIdx) return;
+    lastHoleIdxRef.current = holeIdx;
     if (!groupCode) return;
     if (isLocked) return;
-    // Slight delay so localStorage save runs first
+    // Small delay for state to settle before reading
     const t = setTimeout(() => {
       logRound();
       fetchOtherFlightsAndDiff();
-    }, 800);
+    }, 200);
     return () => clearTimeout(t);
-  }, [inPlayKey, groupCode, isLocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [holeIdx, groupCode, isLocked]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Safety-net trigger: log when app is backgrounded (visibilitychange to hidden,
+  // pagehide). This catches the case where user closes/swipes-away the app
+  // mid-hole before reaching a hole transition.
+  React.useEffect(() => {
+    if (!groupCode) return;
+    if (isLocked) return;
+    const onHide = () => {
+      if (document.visibilityState === "hidden") logRound();
+    };
+    const onPageHide = () => logRound();
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [groupCode, isLocked, logRound]);
   const frontPlayed = inPlay.slice(0,9).filter(Boolean).length;
   const backPlayed = inPlay.slice(9,18).filter(Boolean).length;
   const firstNine = frontPlayed >= backPlayed ? "F" : "B";
