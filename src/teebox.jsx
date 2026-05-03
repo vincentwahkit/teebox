@@ -3571,7 +3571,9 @@ function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
       onTouchEnd={handleTouchEnd}
     >
       <style>{`
-        body { background: var(--bg); }
+        body { background: var(--bg); margin: 0; }
+        .light-mode { --bg: #ffffff; --card: #eeeeee; --input: #ffffff; --border: #cccccc; --border2: #888888; --text: #000000; --muted: #333333; --dim: #333333; --neg: #cc0000; --accent: #000000; }
+        .dark-mode  { --bg: #0a1a0a; --card: #0d2210; --input: #071507; --border: #1e3a1e; --border2: #2a5a2a; --text: #e8f5e8; --muted: #5a8a5a; --dim: #4a7a4a; --neg: #f87171; --accent: #4ade80; }
       `}</style>
       {/* Sticky header */}
       <div style={{ position: "sticky", top: 0, zIndex: 100, background: "var(--bg)", borderBottom: "1px solid var(--border)" }}>
@@ -3608,7 +3610,9 @@ function ViewerMode({ groupCode, onBack, isLight, toggleTheme }) {
         {/* Empty state */}
         {!loading && flights.length === 0 && (
           <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>⛳</div>
+            <div style={{ marginBottom: 14, display: "flex", justifyContent: "center" }}>
+              <TeeBoxLogo size={64} />
+            </div>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>No active flights</div>
             <div style={{ fontSize: 13, opacity: 0.7 }}>No flights have started logging holes for code {groupCode} today.</div>
             <div style={{ fontSize: 12, opacity: 0.6, marginTop: 16 }}>Pull down or tap ↻ to check again.</div>
@@ -4562,6 +4566,51 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           </div>
         </div>
       )}
+      {/* Unified live ticker — flash entries (birdies/eagles/HIO) + player scores.
+          Placed BEFORE sticky header so it always sits at the very top. */}
+      {(scoresTicker || flashItems.length > 0) && (
+        <div style={{
+          position: "sticky", top: 0, zIndex: 9999,
+          background: isLight ? "#1e3a1e" : "#0d2210",
+          borderBottom: `1px solid ${isLight ? "#16a34a" : "#1e3a1e"}`,
+          height: 36, overflow: "hidden",
+          fontFamily: "'DM Sans', sans-serif",
+        }}>
+          <div style={{ position: "absolute", top: 0, left: 0, height: "100%", padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: "#16a34a", display: "flex", alignItems: "center", zIndex: 2, boxShadow: "2px 0 6px rgba(0,0,0,0.3)" }}>
+            LIVE
+          </div>
+          {(() => {
+            const items = [...flashItems, ...(scoresTicker || [])];
+            if (items.length === 0) return null;
+            const renderItem = (item, key) => {
+              if (item.emoji) {
+                return (
+                  <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: "#fbbf24", fontWeight: 700 }}>
+                    <span style={{ fontSize: 20 }}>{item.emoji}</span>
+                    <span>{item.text}</span>
+                  </span>
+                );
+              }
+              const sign = item.vsPar > 0 ? "+" : "";
+              const txt = item.vsPar === 0 ? "E" : `${sign}${item.vsPar}`;
+              const col = item.vsPar < 0 ? "#fbbf24" : item.vsPar === 0 ? "#fff" : (isLight ? "#fff" : "#e8f5e8");
+              return (
+                <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: col, fontWeight: item.isSelf ? 700 : 500 }}>
+                  <span style={{ color: item.isSelf ? "#4ade80" : "var(--muted)", fontSize: 11 }}>{item.isSelf ? "▶" : ""}</span>
+                  <span>{item.name}</span>
+                  <span style={{ fontWeight: 700 }}>{txt}</span>
+                  <span style={{ fontSize: 11, opacity: 0.7 }}>(H{item.lastHole})</span>
+                </span>
+              );
+            };
+            return (
+              <div style={{ paddingLeft: 70, height: "100%", overflow: "hidden" }}>
+                <TickerScroller items={items} passes={5} onComplete={() => setScoresTicker(null)} renderItem={renderItem} />
+              </div>
+            );
+          })()}
+        </div>
+      )}
       {/* Sticky header — top: 36 so it sits below the live ticker (also sticky at top: 0) */}
       <div style={{ position: "sticky", top: (scoresTicker || flashItems.length > 0) ? 36 : 0, zIndex: 100, background: "var(--card)", borderBottom: "1px solid var(--border)", boxShadow: isLight ? "0 2px 8px rgba(0,0,0,0.1)" : "none" }}>
           <div style={{ height: 3, background: "var(--border)" }}>
@@ -4658,56 +4707,6 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       {isLocked && (
         <div style={{ background: isLight ? "#fbbf24" : "#3a2a0a", borderBottom: `2px solid ${isLight ? "#d97706" : "#fbbf24"}`, padding: "8px 14px", textAlign: "center", fontFamily: "'DM Sans', sans-serif", fontSize: 12, fontWeight: 700, color: isLight ? "#000" : "#fbbf24", letterSpacing: 2 }}>
           🔒 VIEW ONLY · ROUND LOCKED (24h+)
-        </div>
-      )}
-      {/* Unified live ticker — flash entries (birdies/eagles/HIO) + player scores */}
-      {(scoresTicker || flashItems.length > 0) && (
-        <div style={{
-          position: "sticky", top: 0, zIndex: 9999,
-          background: isLight ? "#1e3a1e" : "#0d2210",
-          borderBottom: `1px solid ${isLight ? "#16a34a" : "#1e3a1e"}`,
-          height: 36, overflow: "hidden",
-          fontFamily: "'DM Sans', sans-serif",
-        }}>
-          {/* LIVE badge — absolute, always above scrolling content */}
-          <div style={{ position: "absolute", top: 0, left: 0, height: "100%", padding: "0 10px", fontSize: 10, color: "#fff", fontWeight: 700, letterSpacing: 1, background: "#16a34a", display: "flex", alignItems: "center", zIndex: 2, boxShadow: "2px 0 6px rgba(0,0,0,0.3)" }}>
-            LIVE
-          </div>
-          {(() => {
-            const items = [...flashItems, ...(scoresTicker || [])];
-            if (items.length === 0) return null;
-            const renderItem = (item, key) => {
-              if (item.emoji) {
-                return (
-                  <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 14, color: "#fbbf24", fontWeight: 700 }}>
-                    <span style={{ fontSize: 20 }}>{item.emoji}</span>
-                    <span>{item.text}</span>
-                  </span>
-                );
-              }
-              const sign = item.vsPar > 0 ? "+" : "";
-              const txt = item.vsPar === 0 ? "E" : `${sign}${item.vsPar}`;
-              const col = item.vsPar < 0 ? "#fbbf24" : item.vsPar === 0 ? "#fff" : (isLight ? "#fff" : "#e8f5e8");
-              return (
-                <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: col, fontWeight: item.isSelf ? 700 : 500 }}>
-                  <span style={{ color: item.isSelf ? "#4ade80" : "var(--muted)", fontSize: 11 }}>{item.isSelf ? "▶" : ""}</span>
-                  <span>{item.name}</span>
-                  <span style={{ fontWeight: 700 }}>{txt}</span>
-                  <span style={{ fontSize: 11, opacity: 0.7 }}>(H{item.lastHole})</span>
-                </span>
-              );
-            };
-            return (
-              <div style={{ paddingLeft: 70, height: "100%", overflow: "hidden" }}>
-                <TickerScroller
-                  items={items}
-                  passes={5}
-                  onComplete={() => setScoresTicker(null)}
-                  renderItem={renderItem}
-                />
-              </div>
-            );
-          })()}
         </div>
       )}
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px", position: "relative" }}>
