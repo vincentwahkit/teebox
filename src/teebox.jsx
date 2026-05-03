@@ -1641,7 +1641,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             </div>
           )}
           {/* Quick re-entry to last watched group */}
-          {lastViewerCode && onWatchLive && (
+          {lastViewerCode && lastViewerCode !== SUPERUSER_DEFAULT_CODE && onWatchLive && (
             <button onClick={() => onWatchLive(lastViewerCode)}
               style={{
                 width: "100%", marginBottom: 16, padding: "10px 14px",
@@ -3827,8 +3827,13 @@ function ViewerMode({ groupCode, onBack, isLight }) {
               else if (s.position === 2) chipStyle = { background: "linear-gradient(135deg, #e5e7eb, #9ca3af)", color: "#1c1c1c", border: "1px solid #d4d4d8" };
               else if (s.position === 3) chipStyle = { background: "linear-gradient(135deg, #d97706, #92400e)", color: "#fef3c7", border: "1px solid #b45309" };
               // Flight tag color
-              const flightColors = ["#4ade80", "#60a5fa", "#fb923c", "#d946ef"];
-              const flightBg = ["rgba(74,222,128,0.15)", "rgba(96,165,250,0.15)", "rgba(249,115,22,0.15)", "rgba(232,121,249,0.15)"];
+              // Flight tag color — darker in light mode for readability
+              const flightColors = isLight
+                ? ["#16a34a", "#1d4ed8", "#c2410c", "#a21caf"]
+                : ["#4ade80", "#60a5fa", "#fb923c", "#d946ef"];
+              const flightBg = isLight
+                ? ["rgba(22,163,74,0.12)", "rgba(29,78,216,0.12)", "rgba(194,65,12,0.12)", "rgba(162,28,175,0.12)"]
+                : ["rgba(74,222,128,0.15)", "rgba(96,165,250,0.15)", "rgba(249,115,22,0.15)", "rgba(232,121,249,0.15)"];
               const fIdx = (s.flightIdx || 0) % 4;
               const isMe = tagged && tagged.name === s.name && tagged.flightIdx === s.flightIdx;
               return (
@@ -7108,7 +7113,15 @@ export default function App() {
   const [savedConfig, setSavedConfig] = useState(null);
   const [viewerCode, setViewerCode] = useState(null); // when set, App routes to ViewerMode
   const [lastViewerCode, setLastViewerCode] = useState(() => {
-    try { return localStorage.getItem("sws_last_viewer_code") || null; } catch(_) { return null; }
+    try {
+      const v = localStorage.getItem("sws_last_viewer_code");
+      // Migrate: if previously persisted as 0000 (superuser default), clear it.
+      if (v === SUPERUSER_DEFAULT_CODE) {
+        localStorage.removeItem("sws_last_viewer_code");
+        return null;
+      }
+      return v || null;
+    } catch(_) { return null; }
   });
   const [showSplash, setShowSplash] = useState(true);
   const [savedRounds, setSavedRounds] = useState(() => {
@@ -7186,7 +7199,15 @@ export default function App() {
         ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
         : viewerCode
           ? <ViewerMode groupCode={viewerCode} onBack={() => setViewerCode(null)} isLight={isLight} />
-          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => { setViewerCode(code); setLastViewerCode(code); try { localStorage.setItem("sws_last_viewer_code", code); } catch(_) {} }} lastViewerCode={lastViewerCode} />
+          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => {
+              setViewerCode(code);
+              // Only persist as "lastViewerCode" if it's a normal user-entered code.
+              // The superuser default code (0000) is never offered as a quick re-entry button.
+              if (code !== SUPERUSER_DEFAULT_CODE) {
+                setLastViewerCode(code);
+                try { localStorage.setItem("sws_last_viewer_code", code); } catch(_) {}
+              }
+            }} lastViewerCode={lastViewerCode} />
       }
     </>
   );
