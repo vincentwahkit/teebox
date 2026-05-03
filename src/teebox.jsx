@@ -3564,21 +3564,18 @@ function FlightScorecard({ flight, taggedName, isLight }) {
         background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)",
         display: "grid", gridTemplateColumns: `60px repeat(${N}, 1fr)`, gap: 6, alignItems: "center",
       }}>
-        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 12, letterSpacing: 2, color: "var(--accent)" }}>TOTAL</div>
+        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 12, letterSpacing: 2, color: "var(--accent)" }}>VS PAR</div>
         {players.map((name, pi) => {
           const t = totals[pi];
-          const txt = t.vsPar === 0 ? "E" : t.vsPar > 0 ? `+${t.vsPar}` : `−${Math.abs(t.vsPar)}`;
+          const txt = t.gross === 0 ? "—" : t.vsPar === 0 ? "E" : t.vsPar > 0 ? `+${t.vsPar}` : `−${Math.abs(t.vsPar)}`;
           const isMe = name === taggedName;
+          const col = isMe ? "var(--accent)" : (t.vsPar < 0 && t.gross > 0 ? "#fbbf24" : "var(--text)");
           return (
             <div key={pi} style={{ textAlign: "center" }}>
               <div style={{
-                fontFamily: "'Bebas Neue', sans-serif", fontSize: 22,
-                color: isMe ? "var(--accent)" : (t.vsPar < 0 ? "#fbbf24" : "var(--text)"),
-                lineHeight: 1,
-              }}>{t.gross || "—"}</div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
-                {t.gross > 0 ? txt : ""}
-              </div>
+                fontFamily: "'Bebas Neue', sans-serif", fontSize: 26,
+                color: col, lineHeight: 1,
+              }}>{txt}</div>
             </div>
           );
         })}
