@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.2";
+const APP_VERSION = "vw-1.2.3";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1190,6 +1190,146 @@ function SplashContent({ onDone, isLight, isSuperuser, onLogoTap }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUND CONFIRM DIALOG — opens when user taps START ROUND on a fresh setup
+// (no holes played yet). Summarizes course, players + HCPs, games + stakes,
+// and live code so the user can catch mistakes BEFORE any Supabase row is
+// created. Skipped on resume (when savedScores has any inPlay==true).
+// ─────────────────────────────────────────────────────────────────────────────
+function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
+  const { courseName, playerCount, names, hcps, games, vegasRules, threeBallVariant, groupCode } = summary;
+  // Build the games line.
+  // - Vegas shows ruleset: "Vegas (Standard)" / "Vegas (Classic)" / "Vegas (Aggressive)"
+  //   For 3-ball play, append the variant: "Vegas (Standard, Hero or Zero)" / "Vegas (Standard, Ghost)"
+  // - CT, Banker shown plain (no stakes — keep the line scannable)
+  // - Pts shown plain (stake info omitted)
+  // - Nassau is the canonical name for the matchup bets
+  // - Sixes shown plain
+  const gameBits = [];
+  if (games.vegas) {
+    const ruleLabel = vegasRules === "classic" ? "Classic" : vegasRules === "double" ? "Aggressive" : "Standard";
+    let label = `Vegas (${ruleLabel}`;
+    if (playerCount === 3) {
+      label += `, ${threeBallVariant === "ghost" ? "Ghost" : "Hero or Zero"}`;
+    }
+    label += ")";
+    gameBits.push(label);
+  }
+  if (games.ct) gameBits.push("CT");
+  if (games.p3) gameBits.push("Banker");
+  if (games.pts) gameBits.push("Pts");
+  if (games.nassau) gameBits.push("Nassau");
+  if (games.sixes) gameBits.push("Sixes");
+  const gamesLine = gameBits.length === 0 ? "None" : gameBits.join(" · ");
+  const codeLine = groupCode && groupCode.trim()
+    ? `${groupCode}  —  your group can watch live`
+    : `None  —  round logged for your records only`;
+
+  // Style helpers reused across sections
+  const sectionLabel = {
+    fontSize: 10, color: "var(--label)", letterSpacing: 2, marginBottom: 6,
+    fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
+  };
+  const sectionBox = {
+    background: "var(--input)", border: "1px solid var(--border)", borderRadius: 8,
+    padding: "10px 12px", marginBottom: 10,
+  };
+  const valueText = {
+    fontSize: 14, color: "var(--text)", fontFamily: "'DM Sans', sans-serif",
+    fontWeight: 500, lineHeight: 1.4,
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 9999,
+      background: "rgba(0,0,0,0.55)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+      padding: 0,
+    }} onClick={onCancel}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--bg)",
+        borderTopLeftRadius: 16, borderTopRightRadius: 16,
+        width: "100%", maxWidth: 480,
+        maxHeight: "90vh", overflowY: "auto",
+        padding: "20px 18px 24px",
+        boxShadow: "0 -10px 30px rgba(0,0,0,0.4)",
+      }} className={isLight ? "light-mode" : "dark-mode"}>
+        <div style={{
+          fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 2,
+          color: "var(--text)", marginBottom: 4, textAlign: "center",
+        }}>CONFIRM ROUND</div>
+        <div style={{
+          fontSize: 11, color: "var(--text)", opacity: 0.7, marginBottom: 16,
+          textAlign: "center", fontFamily: "'DM Sans', sans-serif",
+        }}>Check before starting — changes after this require going back</div>
+
+        {/* COURSE */}
+        <div style={sectionBox}>
+          <div style={sectionLabel}>COURSE</div>
+          <div style={valueText}>{courseName}</div>
+        </div>
+
+        {/* PLAYERS — header row "PLAYER | HCP", then one row per player */}
+        <div style={sectionBox}>
+          <div style={sectionLabel}>PLAYERS ({playerCount})</div>
+          <div style={{
+            display: "flex", justifyContent: "space-between",
+            paddingBottom: 4, marginBottom: 4,
+            borderBottom: "1px solid var(--border)",
+          }}>
+            <span style={{
+              fontSize: 10, color: "var(--label)", letterSpacing: 1.5,
+              fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
+            }}>NAME</span>
+            <span style={{
+              fontSize: 10, color: "var(--label)", letterSpacing: 1.5,
+              fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
+            }}>HCP</span>
+          </div>
+          {names.map((n, i) => (
+            <div key={i} style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "3px 0",
+            }}>
+              <span style={valueText}>{n}</span>
+              <span style={{ ...valueText, fontVariantNumeric: "tabular-nums" }}>{hcps[i]}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* GAMES */}
+        <div style={sectionBox}>
+          <div style={sectionLabel}>GAMES</div>
+          <div style={valueText}>{gamesLine}</div>
+        </div>
+
+        {/* LIVE CODE */}
+        <div style={sectionBox}>
+          <div style={sectionLabel}>LIVE CODE</div>
+          <div style={valueText}>{codeLine}</div>
+        </div>
+
+        {/* Buttons */}
+        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+          <button onClick={onCancel} style={{
+            flex: 1, padding: "14px 12px",
+            background: "transparent", border: "1px solid var(--border)",
+            color: "var(--text)", borderRadius: 10, fontSize: 14,
+            fontFamily: "'DM Sans', sans-serif", fontWeight: 500, cursor: "pointer",
+          }}>← Edit setup</button>
+          <button onClick={onConfirm} style={{
+            flex: 1.4, padding: "14px 12px",
+            background: "var(--accent)", border: "1px solid var(--accent)",
+            color: "#fff", borderRadius: 10, fontSize: 14,
+            fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2, fontWeight: 700,
+            cursor: "pointer",
+          }}>▶ START ROUND</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // SETUP
 function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, isSuperuser, onWatchLive, lastViewerCode }) {
   const sc = savedConfig; // shorthand
@@ -1360,6 +1500,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [importPreview, setImportPreview] = useState(null);
   const [activeSection, setActiveSection] = useState(null);
   const [startError, setStartError] = useState("");
+  // Round confirmation dialog — opens when user taps START ROUND on a fresh
+  // setup (no holes played yet). Lets the user catch mistakes (wrong course,
+  // HCPs, games) before any Supabase row is created. Skipped on resume.
+  const [pendingConfirm, setPendingConfirm] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const importRef = React.useRef();
   const courseImportRef = React.useRef();
@@ -1485,6 +1629,35 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
     };
     reader.readAsText(file);
     e.target.value = "";
+  }
+  // Build the onStart payload + invoke. Extracted from the START ROUND button
+  // onClick so the same code path runs whether the user goes via the
+  // confirmation dialog (fresh start) or directly (resume).
+  function proceedToStart() {
+    onStart({
+      names: names.slice(0, playerCount).map((n,i) => n.trim()||`P${i+1}`),
+      hcps: hcps.slice(0, playerCount),
+      playerCount,
+      vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
+      holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
+      threeBallVariant, hzBonus,
+      capPar3, capOther,
+      games: {
+        vegas: canVegas && games.vegas,
+        ct: canCT && games.ct,
+        p3: canP3 && games.p3,
+        pts: canPts && games.pts,
+        sixes: canSixes && games.sixes,
+      },
+      nassau: matchupBets,
+      sixesConfig,
+      ptsVal,
+      groupCode,
+      courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
+      _savedScores: savedScores || null,
+      _roundId: sc?._roundId || null,
+    });
+    window.scrollTo(0, 0);
   }
   return (
     <div style={S.page} className={isLight ? "light-mode" : "dark-mode"}>
@@ -2760,6 +2933,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
         <button className="start-btn"
           style={{ ...S.startBtn, fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 3, padding: "18px", marginBottom: 8 }}
           onClick={() => {
+            // Validation first — applies to both fresh-start and resume paths.
             const siCounts = holes.reduce((acc,h) => { acc[h.si]=(acc[h.si]||0)+1; return acc; }, {});
             const dups = Object.keys(siCounts).filter(si=>siCounts[si]>1).map(Number);
             if (dups.length > 0) {
@@ -2773,34 +2947,47 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               return;
             }
             setStartError("");
-            onStart({
-              names: names.slice(0, playerCount).map((n,i) => n.trim()||`P${i+1}`),
-              hcps: hcps.slice(0, playerCount),
-              playerCount,
-              vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
-              holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
-              threeBallVariant, hzBonus,
-              capPar3, capOther,
-              games: {
-                vegas: canVegas && games.vegas,
-                ct: canCT && games.ct,
-                p3: canP3 && games.p3,
-                pts: canPts && games.pts,
-                sixes: canSixes && games.sixes,
-              },
-              nassau: matchupBets,
-              sixesConfig,
-              ptsVal,
-              groupCode,
-              courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
-              _savedScores: savedScores || null,
-              _roundId: sc?._roundId || null,
-            });
-            window.scrollTo(0, 0);
+            // Gate: show confirmation dialog only for genuinely fresh starts
+            // (no holes scored yet). When resuming a round in progress (any
+            // hole already played), skip the dialog and proceed directly —
+            // they've already confirmed once. roundInProgress is the existing
+            // flag computed from savedScores.inPlay.
+            if (!roundInProgress) {
+              setPendingConfirm(true);
+            } else {
+              proceedToStart();
+            }
           }}>
           START ROUND →
         </button>
       </div>
+      {/* Round Confirmation Dialog — appears before the first START ROUND of a
+          round (no holes played yet). Lets user catch mistakes (wrong course,
+          HCP, games) before any Supabase row is created. Skipped on resume. */}
+      {pendingConfirm && (
+        <RoundConfirmDialog
+          summary={{
+            courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
+            playerCount,
+            names: names.slice(0, playerCount).map((n,i) => n.trim() || `P${i+1}`),
+            hcps: hcps.slice(0, playerCount),
+            games: {
+              vegas: canVegas && games.vegas,
+              ct: canCT && games.ct,
+              p3: canP3 && games.p3,
+              pts: canPts && games.pts,
+              sixes: canSixes && games.sixes,
+              nassau: !!(matchupBets && matchupBets.on),
+            },
+            vegasRules,
+            threeBallVariant,
+            groupCode,
+          }}
+          onConfirm={() => { setPendingConfirm(false); proceedToStart(); }}
+          onCancel={() => setPendingConfirm(false)}
+          isLight={isLight}
+        />
+      )}
     </div>
   );
 }
