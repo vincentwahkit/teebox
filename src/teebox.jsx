@@ -1197,14 +1197,14 @@ function SplashContent({ onDone, isLight, isSuperuser, onLogoTap }) {
 // created. Skipped on resume (when savedScores has any inPlay==true).
 // ─────────────────────────────────────────────────────────────────────────────
 function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
-  const { courseName, playerCount, names, hcps, games, vegasRules, threeBallVariant, groupCode } = summary;
+  const { courseName, playerCount, names, hcps, games, matchupBets, vegasRules, threeBallVariant, groupCode } = summary;
   // Build the games line.
   // - Vegas shows ruleset: "Vegas (Standard)" / "Vegas (Classic)" / "Vegas (Aggressive)"
   //   For 3-ball play, append the variant: "Vegas (Standard, Hero or Zero)" / "Vegas (Standard, Ghost)"
-  // - CT, Banker shown plain (no stakes — keep the line scannable)
-  // - Pts shown plain (stake info omitted)
-  // - Nassau is the canonical name for the matchup bets
-  // - Sixes shown plain
+  // - CT, Banker, Pts, Sixes shown plain (no per-game stake info — keep the line scannable)
+  // - Matchup bets: "Nassau" is one of several types (Nassau / GDB / Match Play / Stroke Play).
+  //   A round may have multiple matchups of different types. Show distinct types
+  //   actually configured, in canonical order. If no matchups enabled, omit.
   const gameBits = [];
   if (games.vegas) {
     const ruleLabel = vegasRules === "classic" ? "Classic" : vegasRules === "double" ? "Aggressive" : "Standard";
@@ -1218,7 +1218,14 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
   if (games.ct) gameBits.push("CT");
   if (games.p3) gameBits.push("Banker");
   if (games.pts) gameBits.push("Pts");
-  if (games.nassau) gameBits.push("Nassau");
+  // Matchup bets: collect distinct types present in the configured matchups.
+  if (matchupBets && matchupBets.on && Array.isArray(matchupBets.matchups) && matchupBets.matchups.length > 0) {
+    const TYPE_LABEL = { nassau: "Nassau", gdb: "GDB", matchplay: "Match Play", stroke: "Stroke Play" };
+    const TYPE_ORDER = ["nassau", "gdb", "matchplay", "stroke"];
+    const present = new Set();
+    matchupBets.matchups.forEach(m => present.add(m.type || "nassau"));
+    TYPE_ORDER.forEach(t => { if (present.has(t)) gameBits.push(TYPE_LABEL[t]); });
+  }
   if (games.sixes) gameBits.push("Sixes");
   const gamesLine = gameBits.length === 0 ? "None" : gameBits.join(" · ");
   const codeLine = groupCode && groupCode.trim()
@@ -1249,10 +1256,15 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
       <div onClick={e => e.stopPropagation()} style={{
         background: "var(--bg)",
         borderTopLeftRadius: 16, borderTopRightRadius: 16,
+        // Visible top edge so the dialog is clearly distinct from the Setup
+        // screen below (especially in dark mode where backgrounds are similar).
+        borderTop: "2px solid var(--accent)",
+        borderLeft: "1px solid var(--border)",
+        borderRight: "1px solid var(--border)",
         width: "100%", maxWidth: 480,
         maxHeight: "90vh", overflowY: "auto",
         padding: "20px 18px 24px",
-        boxShadow: "0 -10px 30px rgba(0,0,0,0.4)",
+        boxShadow: "0 -10px 30px rgba(0,0,0,0.5)",
       }} className={isLight ? "light-mode" : "dark-mode"}>
         <div style={{
           fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 2,
@@ -1269,7 +1281,7 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
           <div style={valueText}>{courseName}</div>
         </div>
 
-        {/* PLAYERS — header row "PLAYER | HCP", then one row per player */}
+        {/* PLAYERS — header row "NAME | HCP", then one row per player */}
         <div style={sectionBox}>
           <div style={sectionLabel}>PLAYERS ({playerCount})</div>
           <div style={{
@@ -2977,8 +2989,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               p3: canP3 && games.p3,
               pts: canPts && games.pts,
               sixes: canSixes && games.sixes,
-              nassau: !!(matchupBets && matchupBets.on),
             },
+            matchupBets,
             vegasRules,
             threeBallVariant,
             groupCode,
