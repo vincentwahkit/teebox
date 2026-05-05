@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.13";
+const APP_VERSION = "vw-1.2.14";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -772,6 +772,24 @@ function makeFilename(names) {
   const date = now.toISOString().slice(0,10).replace(/-/g,"");
   const players = (names||[]).map(n => n.replace(/[^a-zA-Z0-9]/g,"").slice(0,3).toUpperCase()).join(" ");
   return `sws.${date}.${players}.json`;
+}
+
+// Derive the round-creation date as a human-readable string. Uses _roundId
+// (Date.now() at round creation, immutable) so the displayed date doesn't
+// drift if the round is edited or autosaved later — which would happen with
+// the legacy `round.date` field that was stamped at every autosave. Locked to
+// Asia/Singapore so the date stays stable regardless of viewer's location.
+// Falls back to round.date for legacy entries that may have been saved
+// before _roundId was reliable.
+function roundDateLabel(round) {
+  const rid = round?.config?._roundId || round?.roundId;
+  if (rid) {
+    return new Date(rid).toLocaleDateString("en-SG", {
+      day: "numeric", month: "short", year: "numeric",
+      timeZone: "Asia/Singapore",
+    });
+  }
+  return round?.date || "";
 }
 
 async function exportRound(roundData) {
@@ -1724,7 +1742,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           <div style={{ background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 420 }}>
             <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, marginBottom: 12, fontFamily: "'DM Sans', sans-serif" }}>IMPORT ROUND</div>
             <div style={{ fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>{importPreview.courseName || "Round"}</div>
-            <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 14, fontFamily: "'DM Sans', sans-serif" }}>{importPreview.date}</div>
+            <div style={{ fontSize: 12, color: "var(--text)", marginBottom: 14, fontFamily: "'DM Sans', sans-serif" }}>{roundDateLabel(importPreview)}</div>
             <div style={{ display: "grid", gridTemplateColumns: `repeat(${importPreview.config.names.length},1fr)`, gap: 6, marginBottom: 16 }}>
               {importPreview.config.names.map((name, pi) => {
                 const cfg = importPreview.config;
@@ -3052,7 +3070,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                     <div>
                       <div style={{ fontSize: 16, fontWeight: "700", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{round.courseName || "Round"}</div>
-                      <div style={{ fontSize: 13, color: "var(--text)", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>{round.date}</div>
+                      <div style={{ fontSize: 13, color: "var(--text)", marginTop: 2, fontFamily: "'DM Sans', sans-serif" }}>{roundDateLabel(round)}</div>
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => exportRound(round)}
