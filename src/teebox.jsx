@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.3";
+const APP_VERSION = "vw-1.2.6";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -42,6 +42,19 @@ function supaUpsert(table, roundId, payload) {
       "Prefer": "resolution=merge-duplicates,return=minimal",
     },
     body: JSON.stringify({ ...payload, round_id: roundId }),
+  }).catch(() => {});
+}
+// Fire-and-forget DELETE by round_id. Used by the Discard flow to remove
+// the abandoned round from Supabase. RLS DELETE policy on rounds_full and
+// rounds_log was added earlier (originally for the Sankaku superuser
+// delete-round feature). Idempotent — if the round_id has no matching row
+// (e.g. user discarded before any hole was played, so logRound never fired),
+// the DELETE is a no-op.
+function supaDelete(table, roundId) {
+  const url = `${SUPA_URL_BASE}/${table}?round_id=eq.${encodeURIComponent(roundId)}`;
+  return fetch(url, {
+    method: "DELETE",
+    headers: { ...SUPA_HDR, "Prefer": "return=minimal" },
   }).catch(() => {});
 }
 const VEGAS_VAL = 1;
@@ -1343,7 +1356,7 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
 }
 
 // SETUP
-function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, isSuperuser, onWatchLive, lastViewerCode }) {
+function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, onStartNew, isSuperuser, onWatchLive, lastViewerCode }) {
   const sc = savedConfig; // shorthand
   // Round is "in progress" when at least one hole has been played (toggled In Play).
   // Used to lock player count + lineup reorder to prevent score corruption.
@@ -1516,6 +1529,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   // setup (no holes played yet). Lets the user catch mistakes (wrong course,
   // HCPs, games) before any Supabase row is created. Skipped on resume.
   const [pendingConfirm, setPendingConfirm] = useState(false);
+  // Two-step discard confirmation for the Scores Preserved banner — replaces
+  // the old one-tap "🗑 New Round" booby-trap. Tap Discard → state 2 with
+  // explicit warning + Cancel/Yes. Mirrors Sankaku player/tracker delete.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const importRef = React.useRef();
   const courseImportRef = React.useRef();
@@ -1811,20 +1828,91 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           </div>
         </div>
         <div style={{ padding: "12px 16px 100px" }}>
-          {/* ── Saved scores banner ── */}
-          {savedScores && (
-            <div style={{ background: "var(--card)", border: "1px solid var(--accent)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 20 }}>♻️</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: "700", color: "var(--accent)", fontFamily: "'DM Sans', sans-serif" }}>Scores preserved</div>
-                <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{roundInProgress ? "Change settings then START ROUND. Lineup order locked." : "Change settings then START ROUND."}</div>
+          {/* ── Saved scores banner ──
+              User came back to Setup via 🏠 with scores preserved. Visually
+              parallel to the "⏱ ROUND IN PROGRESS" banner — same color/size
+              language so it's impossible to miss. Two-step discard
+              confirmation replaces the old one-tap "🗑 New Round" booby-trap. */}
+          {savedScores && (() => {
+            const ip = savedScores.inPlay || [];
+            const playedCount = Array.isArray(ip) ? ip.filter(Boolean).length : 0;
+            const holeAt = (typeof savedScores.holeIdx === "number") ? (savedScores.holeIdx + 1) : null;
+            const courseLabel = sc?.courseName || (loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : null);
+            const playerNames = (sc?.names || []).slice(0, sc?.playerCount || 4).filter(Boolean);
+            return (
+              <div style={{
+                marginBottom: 16, padding: "14px 16px",
+                background: isLight ? "rgba(22,163,74,0.08)" : "rgba(74,222,128,0.08)",
+                border: `1px solid var(--accent)`, borderRadius: 12,
+              }}>
+                <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", marginBottom: 6 }}>
+                  ♻️ EDITING ROUND IN PROGRESS
+                </div>
+                {courseLabel && (
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 2 }}>
+                    {courseLabel}
+                  </div>
+                )}
+                {(holeAt !== null || playedCount > 0) && (
+                  <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", opacity: 0.75 }}>
+                    {holeAt !== null ? `Hole ${holeAt}` : ""}{holeAt !== null && playedCount > 0 ? " · " : ""}{playedCount > 0 ? `${playedCount}/18 holes played` : ""}
+                  </div>
+                )}
+                {playerNames.length > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", opacity: 0.6, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {playerNames.join(" · ")}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginTop: 8, lineHeight: 1.4 }}>
+                  Your scores are safe. Edit any settings below{roundInProgress ? " (lineup order is locked)" : ""}, then tap <b>START ROUND</b> to resume.
+                </div>
+                {confirmDiscard ? (
+                  <div style={{
+                    marginTop: 12, padding: "10px 12px",
+                    background: isLight ? "rgba(220,38,38,0.08)" : "rgba(248,113,113,0.08)",
+                    border: "1px solid var(--neg)", borderRadius: 8,
+                  }}>
+                    <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 8, lineHeight: 1.4 }}>
+                      ⚠️ Discard this round? {playedCount > 0 ? `Scores from ${playedCount} hole${playedCount === 1 ? "" : "s"} will be lost.` : "Setup will reset."}
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => setConfirmDiscard(false)} style={{
+                        flex: 1, background: "transparent", border: "1px solid var(--border)",
+                        color: "var(--text)", borderRadius: 6, fontSize: 13, padding: "8px",
+                        cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                      }}>Cancel</button>
+                      <button onClick={() => { setConfirmDiscard(false); onNewRound && onNewRound(); }} style={{
+                        flex: 1, background: "var(--neg)", border: "1px solid var(--neg)",
+                        color: "#fff", borderRadius: 6, fontSize: 13, padding: "8px",
+                        cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontWeight: 700,
+                      }}>Yes, discard</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "stretch" }}>
+                    <button onClick={() => onStartNew && onStartNew()} style={{
+                      flex: 1, background: "transparent", color: "var(--text)",
+                      border: "1px solid var(--border)", borderRadius: 8, fontSize: 12,
+                      padding: "8px 12px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                      lineHeight: 1.3, textAlign: "center",
+                    }}>
+                      <div style={{ fontWeight: 600 }}>Start new</div>
+                      <div style={{ fontSize: 10, opacity: 0.65, marginTop: 1 }}>Saves to Recent Rounds</div>
+                    </button>
+                    <button onClick={() => setConfirmDiscard(true)} style={{
+                      flex: 1, background: "transparent", color: "var(--neg)",
+                      border: "1px solid #5a2a2a", borderRadius: 8, fontSize: 12,
+                      padding: "8px 12px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                      lineHeight: 1.3, textAlign: "center",
+                    }}>
+                      <div style={{ fontWeight: 600 }}>🗑 Discard round</div>
+                      <div style={{ fontSize: 10, opacity: 0.7, marginTop: 1 }}>Permanently deletes</div>
+                    </button>
+                  </div>
+                )}
               </div>
-              <button onClick={() => onNewRound && onNewRound()}
-                style={{ background: "#3a1a1a", color: "var(--neg)", border: "1px solid #5a2a2a", borderRadius: 8, fontSize: 13, padding: "6px 10px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap", flexShrink: 0 }}>
-                🗑 New Round
-              </button>
-            </div>
-          )}
+            );
+          })()}
           {/* Resume banner — prominent UI for recent in-progress round.
               Shown when newest saved round is <6h old, NOT yet 18-hole complete,
               AND user hasn't already loaded it (savedConfig set means already in resume flow). */}
@@ -7448,6 +7536,58 @@ export default function App() {
       try { localStorage.setItem("sws_lastcourse", JSON.stringify({ name: round.config.courseName, tee: "", holes: round.config.holes })); } catch(_) {}
     }
   }
+  // Discard the currently-edited round. Full nuke (Option B):
+  //   1. Clear App React state (savedScores, savedConfig)
+  //   2. Remove from sws_rounds localStorage so the Resume banner and
+  //      Recent Rounds list both stop showing this round
+  //   3. Fire-and-forget DELETE from Supabase rounds_full + rounds_log
+  //      (idempotent — no-op if logRound never fired due to 0-hole gate)
+  // Network failure is silent — local clear already happened by then, no
+  // user-actionable recovery exists.
+  function onDiscardRound() {
+    const rid = savedConfig?._roundId || null;
+    // 1 + 2: local clear (sws_rounds + App state)
+    if (rid) {
+      setSavedRounds(prev => {
+        const updated = prev.filter(r => r.roundId !== rid);
+        try { localStorage.setItem("sws_rounds", JSON.stringify(updated)); } catch(_) {}
+        return updated;
+      });
+      // 3: Supabase delete — fire-and-forget, both tables in parallel
+      supaDelete("rounds_full", rid);
+      supaDelete("rounds_log", rid);
+    }
+    setSavedScores(null);
+    setSavedConfig(null);
+  }
+  // Park the currently-edited round and start fresh. Non-destructive:
+  //   1. Save round to sws_rounds localStorage so it shows up in Recent
+  //      Rounds for later resume (mirrors what Scorecard's autosave does,
+  //      because we may have arrived via 🏠 before any autosave fired —
+  //      e.g. just imported and bailed without scoring)
+  //   2. Clear App state (savedScores, savedConfig) → banner disappears
+  //   3. Supabase row (if any) is left untouched — when user resumes from
+  //      Recent Rounds later, hole transitions will continue upserting under
+  //      the same round_id, preserving continuity
+  function onStartNew() {
+    if (!savedConfig) {
+      // Defensive — banner shouldn't be visible without savedConfig, but
+      // handle gracefully just in case.
+      setSavedScores(null);
+      return;
+    }
+    const rid = savedConfig._roundId || null;
+    if (rid) {
+      saveRound({
+        roundId: rid,
+        config: { ...savedConfig, _savedState: savedScores ? { ...savedScores } : null },
+        date: new Date().toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric" }),
+        courseName: savedConfig.courseName || "Round",
+      });
+    }
+    setSavedScores(null);
+    setSavedConfig(null);
+  }
   if (showSplash) return <SplashContent onDone={() => setShowSplash(false)} isLight={isLight} isSuperuser={isSuperuser} onLogoTap={handleLogoTap} />;
   return (
     <>
@@ -7470,7 +7610,7 @@ export default function App() {
               }
               setViewerCode(null);
             }} isLight={isLight} />
-          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={() => { setSavedScores(null); setSavedConfig(null); }} isSuperuser={isSuperuser} onWatchLive={(code) => {
+          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={onDiscardRound} onStartNew={onStartNew} isSuperuser={isSuperuser} onWatchLive={(code) => {
               setViewerCode(code);
               // Only persist as "lastViewerCode" if it's a normal user-entered code.
               // The superuser default code (0000) is never offered as a quick re-entry button.
