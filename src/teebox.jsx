@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.7";
+const APP_VERSION = "vw-1.2.8";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1924,6 +1924,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             if (ageMs > SIX_HOURS) return null;
             // Don't show if user is already mid-resume (savedConfig is set when arriving from 🏠)
             if (sc) return null;
+            // Skip if user explicitly parked this round via "Start new" — they
+            // chose to set it aside, banner shouldn't keep nagging. Round is
+            // still in Recent Rounds for explicit resume.
+            if (latest.userParked) return null;
             const ip = latest.config?._savedState?.inPlay || [];
             const playedCount = Array.isArray(ip) ? ip.filter(Boolean).length : 0;
             // Hide if round is fully complete — user wants to start fresh, not resume completed round
@@ -7514,9 +7518,13 @@ export default function App() {
     const entry = { ...roundData, savedAt: Date.now() };
     setSavedRounds(prev => {
       const existing = prev.findIndex(r => r.roundId === entry.roundId);
+      // When updating an existing entry, preserve sticky flags like
+      // `userParked` (set once by onStartNew, never auto-cleared) so
+      // subsequent autosaves don't lose them.
+      const merged = existing >= 0 ? { ...prev[existing], ...entry } : entry;
       const updated = existing >= 0
-        ? prev.map((r, i) => i === existing ? entry : r)
-        : [entry, ...prev].slice(0, 3);
+        ? prev.map((r, i) => i === existing ? merged : r)
+        : [merged, ...prev].slice(0, 3);
       try {
         localStorage.setItem("sws_rounds", JSON.stringify(updated));
       } catch (e) {
@@ -7584,6 +7592,11 @@ export default function App() {
         config: { ...savedConfig, _savedState: savedScores ? { ...savedScores } : null },
         date: new Date().toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric" }),
         courseName: savedConfig.courseName || "Round",
+        // Mark explicitly user-parked so the prominent Resume banner stops
+        // showing it (Recent Rounds list still shows it normally — user can
+        // resume from there). Persists through future autosaves; only set
+        // here, never auto-cleared.
+        userParked: true,
       });
     }
     setSavedScores(null);
