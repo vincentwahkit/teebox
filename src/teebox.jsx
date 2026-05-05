@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.10";
+const APP_VERSION = "vw-1.2.13";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1356,8 +1356,11 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
 }
 
 // SETUP
-function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, onStartNew, viewingConfig = null, onContinueViewing, onDismissViewing, isSuperuser, onWatchLive, lastViewerCode }) {
-  const sc = savedConfig; // shorthand
+function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, onStartNew, viewingConfig = null, viewingLocked = false, onContinueViewing, onUseAsTemplate, onStartFresh, isSuperuser, onWatchLive, lastViewerCode }) {
+  // sc shorthand: hooks initialize from this. Falls back to viewingConfig
+  // when in view-mode (Setup hydrates from the locked round's settings).
+  // Both savedConfig and viewingConfig contain the same shape (config + _roundId).
+  const sc = savedConfig || viewingConfig;
   // Round is "in progress" when at least one hole has been played (toggled In Play).
   // Used to lock player count + lineup reorder to prevent score corruption.
   const roundInProgress = !!(savedScores?.inPlay?.some?.(p => p));
@@ -1684,7 +1687,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       groupCode,
       courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
       _savedScores: savedScores || null,
-      _roundId: sc?._roundId || null,
+      // Only inherit _roundId from savedConfig (true resume of in-progress
+      // round). When in view-mode/template flow (viewingConfig set but
+      // savedConfig is null), we want a FRESH round_id — user is creating a
+      // new round, not overwriting historical data.
+      _roundId: savedConfig?._roundId || null,
     });
     window.scrollTo(0, 0);
   }
@@ -1828,14 +1835,66 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           </div>
         </div>
         <div style={{ padding: "12px 16px 100px" }}>
-          {/* ── View-mode banner ──
-              User came back to Setup via 🏠 from a locked (>24h) round in
-              view-only mode. Subtle strip — single line course name + chevron
-              + dismiss. Tap body to re-enter Scorecard for continued viewing.
-              Only renders when viewingConfig is set AND no edit-mode state
-              (savedScores) — they are mutually exclusive in practice but the
-              guard makes hierarchy explicit. */}
-          {viewingConfig && !savedScores && (() => {
+          {/* ── View-mode banner (LOCKED) ──
+              User came back to Setup via 🏠 from a locked >24h round.
+              Three-button banner: Back to scorecard / Use as template / Start
+              fresh. While locked, all Setup form fields are disabled (handled
+              by `viewingLocked` checks throughout) and START ROUND is hidden.
+              The viewed round's settings are visible (read-only) so user can
+              inspect course / players / HCPs / games / stakes. */}
+          {viewingConfig && viewingLocked && !savedScores && (() => {
+            const courseLabel = viewingConfig.courseName || "Round";
+            return (
+              <div style={{
+                marginBottom: 16, padding: "14px 16px",
+                background: isLight ? "rgba(22,163,74,0.08)" : "rgba(74,222,128,0.08)",
+                border: `1px solid var(--accent)`, borderRadius: 12,
+              }}>
+                <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", marginBottom: 4 }}>
+                  👁 VIEWING ROUND
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginBottom: 6 }}>
+                  {courseLabel}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text)", opacity: 0.75, fontFamily: "'DM Sans', sans-serif", marginBottom: 12, lineHeight: 1.4 }}>
+                  Settings below are read-only. Pick an action to continue.
+                </div>
+                <button onClick={() => onContinueViewing && onContinueViewing()} style={{
+                  width: "100%", padding: "10px 12px", marginBottom: 8,
+                  background: "transparent", color: "var(--text)",
+                  border: "1px solid var(--border)", borderRadius: 8,
+                  fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontWeight: 600,
+                }}>← Back to scorecard</button>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => onUseAsTemplate && onUseAsTemplate()} style={{
+                    flex: 1, padding: "10px 12px",
+                    background: "transparent", color: "var(--text)",
+                    border: "1px solid var(--border)", borderRadius: 8,
+                    fontSize: 12, cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                    lineHeight: 1.3, textAlign: "center",
+                  }}>
+                    <div style={{ fontWeight: 600 }}>Use as template</div>
+                    <div style={{ fontSize: 10, opacity: 0.65, marginTop: 1 }}>Edit these settings for new round</div>
+                  </button>
+                  <button onClick={() => onStartFresh && onStartFresh()} style={{
+                    flex: 1, padding: "10px 12px",
+                    background: "transparent", color: "var(--text)",
+                    border: "1px solid var(--border)", borderRadius: 8,
+                    fontSize: 12, cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                    lineHeight: 1.3, textAlign: "center",
+                  }}>
+                    <div style={{ fontWeight: 600 }}>Start fresh</div>
+                    <div style={{ fontSize: 10, opacity: 0.65, marginTop: 1 }}>Reset to your normal setup</div>
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+          {/* ── View-mode unlocked indicator (TEMPLATE) ──
+              User picked "Use as template". Setup is now editable, fields are
+              pre-filled from the viewed round. Small reminder + back-to-view
+              link in case user wants to peek again. */}
+          {viewingConfig && !viewingLocked && !savedScores && (() => {
             const courseLabel = viewingConfig.courseName || "Round";
             return (
               <div style={{
@@ -1844,31 +1903,24 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 border: "1px solid var(--border)",
                 borderRadius: 10,
                 display: "flex", alignItems: "center", gap: 10,
-                padding: "10px 12px",
+                padding: "8px 12px",
               }}>
-                <div onClick={() => onContinueViewing && onContinueViewing()} style={{
-                  flex: 1, cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-                }}>
-                  <span style={{ fontSize: 14 }}>👁</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      fontSize: 12, color: "var(--text)", opacity: 0.7,
-                      fontFamily: "'DM Sans', sans-serif", lineHeight: 1.2,
-                    }}>Viewing</div>
-                    <div style={{
-                      fontSize: 14, color: "var(--text)", fontWeight: 600,
-                      fontFamily: "'DM Sans', sans-serif", lineHeight: 1.3,
-                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                    }}>{courseLabel}</div>
+                <span style={{ fontSize: 12 }}>🆕</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 12, color: "var(--text)", fontWeight: 600,
+                    fontFamily: "'DM Sans', sans-serif", lineHeight: 1.3,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}>New round (based on {courseLabel})</div>
+                  <div style={{ fontSize: 10, color: "var(--text)", opacity: 0.6, fontFamily: "'DM Sans', sans-serif" }}>
+                    Edit settings below, then START ROUND
                   </div>
-                  <span style={{ fontSize: 12, color: "var(--text)", opacity: 0.55, fontFamily: "'DM Sans', sans-serif" }}>Tap to continue →</span>
                 </div>
-                <button onClick={(e) => { e.stopPropagation(); onDismissViewing && onDismissViewing(); }} style={{
-                  background: "transparent", border: "none",
-                  color: "var(--text)", opacity: 0.5,
-                  fontSize: 16, padding: "4px 6px", cursor: "pointer",
-                  fontFamily: "'DM Sans', sans-serif", lineHeight: 1,
-                }} aria-label="Dismiss">✕</button>
+                <button onClick={() => onContinueViewing && onContinueViewing()} style={{
+                  background: "transparent", border: "1px solid var(--border)",
+                  color: "var(--text)", borderRadius: 6, fontSize: 11,
+                  padding: "5px 8px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                }}>👁 View</button>
               </div>
             );
           })()}
@@ -2054,6 +2106,16 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               <span>🛡️</span><span>WATCH ALL · ALL FLIGHTS TODAY</span>
             </button>
           )}
+          {/* ── Editable form region ──
+              When viewingLocked is true, this whole region is visually
+              disabled and click-blocked so user can SEE the round's settings
+              (course, players, HCPs, games, stakes) but can't edit them or
+              accidentally start a round. They must explicitly tap "Use as
+              template" or "Start fresh" first. */}
+          <div
+            style={viewingLocked ? { pointerEvents: "none" } : null}
+            aria-disabled={viewingLocked || undefined}
+          >
           <Sect title="Players & Handicaps">
             {/* Player count selector */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -2114,7 +2176,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? ` · ${loadedCourse.tee}` : ""}`
               : "Custom";
             return (
-              <CollapseSect title={`Course — ${courseTitle}`} open={activeSection==="course"} onToggle={() => setActiveSection(s => s==="course" ? null : "course")}>
+              <CollapseSect title={`Course — ${courseTitle}`} open={activeSection==="course"} forceOpen={viewingLocked} onToggle={() => setActiveSection(s => s==="course" ? null : "course")}>
                 {storageMsg && <div style={{ background: "var(--card)", border: "1px solid #4ade80", borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontSize: 13, color: "#4ade80" }}>{storageMsg}</div>}
                 {saveError && <div style={{ background: "#3a0a0a", border: "1px solid var(--neg)", borderRadius: 6, padding: "8px 12px", marginBottom: 10, fontSize: 13, color: "var(--neg)" }}>⚠ {saveError}</div>}
                 {/* Action buttons */}
@@ -2232,6 +2294,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           <CollapseSect
             title={groupCode ? `Live code · ${groupCode}` : "Live code"}
             open={activeSection === "multiflight" || (groupCode.length === 4 && activeSection !== "multiflight_collapsed")}
+            forceOpen={viewingLocked}
             onToggle={() => {
               if (groupCode.length === 4) {
                 // When code is set, manual collapse uses a special key to override auto-open
@@ -2292,7 +2355,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             )}
           </CollapseSect>
           {/* ── Games & Stakes — collapsible ── */}
-          <CollapseSect title="Games & Stakes" open={activeSection==="games"} onToggle={() => setActiveSection(s => s==="games" ? null : "games")}>
+          <CollapseSect title="Games & Stakes" open={activeSection==="games"} forceOpen={viewingLocked} onToggle={() => setActiveSection(s => s==="games" ? null : "games")}>
             {/* Vegas Players — only shown when N > 4 */}
             {playerCount > 4 && games.vegas && (
               <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)" }}>
@@ -2980,6 +3043,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               </div>
             )}
           </CollapseSect>
+          </div>{/* /Editable form region */}
           {/* ── Recent Rounds — collapsible ── */}
           {savedRounds.length > 0 && (
             <CollapseSect title={`Recent Rounds (${savedRounds.length})`} open={activeSection==="history"} onToggle={() => setActiveSection(s => s==="history" ? null : "history")}>
@@ -3076,7 +3140,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           </div>
         </div>
       </div>
-      {/* Sticky START button */}
+      {/* Sticky START button — hidden in view-mode locked state. User must
+          tap "Use as template" or "Start fresh" first to unlock. */}
+      {!viewingLocked && (
       <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, padding: "12px 16px 16px", background: isLight ? "linear-gradient(0deg, #ffffff 70%, transparent)" : "linear-gradient(0deg, #0a1a0a 70%, transparent)", maxWidth: 480, margin: "0 auto" }}>
         {startError && (
           <div style={{ background: "#3a0a0a", border: "1px solid var(--neg)", borderRadius: 8, padding: "10px 14px", marginBottom: 8, fontSize: 13, color: "var(--neg)", fontFamily: "'DM Sans', sans-serif" }}>
@@ -3114,6 +3180,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           {savedScores ? "RESUME ROUND →" : "START ROUND →"}
         </button>
       </div>
+      )}
       {/* Round Confirmation Dialog — appears before the first START ROUND of a
           round (no holes played yet). Lets user catch mistakes (wrong course,
           HCP, games) before any Supabase row is created. Skipped on resume. */}
@@ -4555,6 +4622,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     setShowBackStrokeModal(true);
   }
   function setScore(hi, pi, val) {
+    if (isLocked) return; // view-only — don't allow score edits in lock mode
     setGross(prev => {
       const n = prev.map(r => [...r]);
       n[hi][pi] = val;
@@ -5496,9 +5564,12 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         </div>
       )}
       <div style={{ maxWidth: 480, margin: "0 auto", padding: "14px 14px 160px", position: "relative" }}>
-        {isLocked && (
-          <div style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 50, pointerEvents: "auto", background: "transparent", cursor: "not-allowed" }} onClick={(e) => { e.stopPropagation(); }} />
-        )}        {view === "hole" ? (
+        {/* Note: the fullscreen click-blocking overlay was removed in
+            vw-1.2.11 to allow read-only navigation in view-mode (PREV/NEXT,
+            $$ tab, Save/Export/Report — none of which mutate the round).
+            The existing `if (isLocked) return` guards on score-changing
+            handlers still prevent any actual edits. */}
+        {view === "hole" ? (
           <>
             {/* HIO Banner */}
             {res.isHIO && (
@@ -5569,6 +5640,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                   const g = parseInt(isGhost ? ghostGross[holeIdx] : gross[holeIdx][pi], 10) || (isGhost ? h.par+1 : h.par);
                   const grossDiff = g - h.par;
                   const setGhostScore = (val) => {
+                    if (isLocked) return; // view-only — don't allow score edits in lock mode
                     setGhostGross(prev => { const n = [...prev]; n[holeIdx] = val; return n; });
                     setInPlay(prev => { const n = [...prev]; n[holeIdx] = true; return n; });
                   };
@@ -7468,14 +7540,18 @@ function InPlayToggle({ on, onToggle }) {
     </div>
   );
 }
-function CollapseSect({ title, open, onToggle, children }) {
+function CollapseSect({ title, open, onToggle, forceOpen, children }) {
+  // forceOpen: used in view-mode to display all sections expanded (so user can
+  // inspect the round's settings without needing to tap headers, which would
+  // be no-ops anyway since the form is read-only).
+  const effectiveOpen = forceOpen || open;
   return (
     <div style={{ marginBottom: 18 }}>
-      <div onClick={onToggle} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: open?10:0, cursor: "pointer", padding: "4px 0" }}>
+      <div onClick={forceOpen ? undefined : onToggle} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: effectiveOpen?10:0, cursor: forceOpen ? "default" : "pointer", padding: "4px 0" }}>
         <div style={{ fontSize: 13, color: "var(--accent)", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'DM Sans', sans-serif" }}>{title}</div>
-        <span style={{ fontSize: 14, color: "var(--accent)" }}>{open?"▲":"▼"}</span>
+        {!forceOpen && <span style={{ fontSize: 14, color: "var(--accent)" }}>{effectiveOpen?"▲":"▼"}</span>}
       </div>
-      {open && children}
+      {effectiveOpen && children}
     </div>
   );
 }
@@ -7513,6 +7589,11 @@ export default function App() {
   // wrongly trigger Discard/Start-new buttons). Cleared on any action that
   // moves to a different round (START ROUND, loadRound, importPreview).
   const [viewingConfig, setViewingConfig] = useState(null);
+  // viewingLocked: paired with viewingConfig. When true, Setup shows the
+  // round's settings as read-only with a three-button banner (Back / Use as
+  // template / Start fresh). When false (after "Use as template"), Setup is
+  // editable with the round's values pre-filled.
+  const [viewingLocked, setViewingLocked] = useState(false);
   const [viewerCode, setViewerCode] = useState(null); // when set, App routes to ViewerMode
   const [lastViewerCode, setLastViewerCode] = useState(() => {
     try {
@@ -7593,9 +7674,10 @@ export default function App() {
     const rid = round.config?._roundId;
     // Strip _savedScores — it takes priority over _savedState and must not bleed into resume
     const { _savedScores, ...cleanConfig } = round.config;
-    // Clear viewingConfig — loading a (different) round means user is moving
+    // Clear viewing state — loading a (different) round means user is moving
     // on from whatever they were viewing.
     setViewingConfig(null);
+    setViewingLocked(false);
     setConfig(cleanConfig);
     window.scrollTo(0, 0);
     // Remember course from resumed round
@@ -7687,10 +7769,12 @@ export default function App() {
               setSavedScores(null);
               setSavedConfig(null);
               setViewingConfig({ ...config, _roundId: rid });
+              setViewingLocked(true);
             } else {
               setSavedScores(scores || null);
               setSavedConfig(rid ? { ...config, _roundId: rid } : config);
               setViewingConfig(null);
+              setViewingLocked(false);
             }
             setConfig(null);
           }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
@@ -7702,7 +7786,24 @@ export default function App() {
               }
               setViewerCode(null);
             }} isLight={isLight} />
-          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setViewingConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={onDiscardRound} onStartNew={onStartNew} viewingConfig={viewingConfig} onContinueViewing={() => setConfig(viewingConfig)} onDismissViewing={() => setViewingConfig(null)} isSuperuser={isSuperuser} onWatchLive={(code) => {
+          : <Setup
+              key={viewingConfig ? `viewing-${viewingConfig._roundId}` : "fresh"}
+              onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setViewingConfig(null); setViewingLocked(false); setConfig(cfg); }}
+              savedRounds={savedRounds}
+              onLoadRound={loadRound}
+              isLight={isLight}
+              toggleTheme={toggleTheme}
+              savedScores={savedScores}
+              savedConfig={savedConfig}
+              onNewRound={onDiscardRound}
+              onStartNew={onStartNew}
+              viewingConfig={viewingConfig}
+              viewingLocked={viewingLocked}
+              onContinueViewing={() => setConfig(viewingConfig)}
+              onUseAsTemplate={() => setViewingLocked(false)}
+              onStartFresh={() => { setViewingConfig(null); setViewingLocked(false); }}
+              isSuperuser={isSuperuser}
+              onWatchLive={(code) => {
               setViewerCode(code);
               // Only persist as "lastViewerCode" if it's a normal user-entered code.
               // The superuser default code (0000) is never offered as a quick re-entry button.
