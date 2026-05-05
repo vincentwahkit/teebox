@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.8";
+const APP_VERSION = "vw-1.2.9";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -7615,7 +7615,25 @@ export default function App() {
         }}>{superToast}</div>
       )}
       {config
-        ? <Scorecard config={config} onBack={(scores, rid) => { setSavedScores(scores || null); setSavedConfig(rid ? { ...config, _roundId: rid } : config); setConfig(null); }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
+        ? <Scorecard config={config} onBack={(scores, rid) => {
+            // If returning from a locked historical round (>24h old, not
+            // superuser), do NOT stash savedScores/savedConfig. Otherwise the
+            // "EDITING ROUND IN PROGRESS" banner appears in Setup with
+            // Resume/Start new/Discard buttons that all do wrong things for a
+            // view-only round (Resume re-enters view-only Scorecard; Discard
+            // would DELETE historical data; Start new would park a finished
+            // round as if it were unfinished). Superuser is allowed to edit
+            // locked rounds, so for them the banner correctly appears.
+            const isLockedRound = rid && (Date.now() - rid > 24 * 60 * 60 * 1000) && !isSuperuser;
+            if (isLockedRound) {
+              setSavedScores(null);
+              setSavedConfig(null);
+            } else {
+              setSavedScores(scores || null);
+              setSavedConfig(rid ? { ...config, _roundId: rid } : config);
+            }
+            setConfig(null);
+          }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
         : viewerCode
           ? <ViewerMode groupCode={viewerCode} onBack={() => {
               // Bump timestamp on exit so the 15-min quick-return window starts now
