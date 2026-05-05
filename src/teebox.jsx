@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.9";
+const APP_VERSION = "vw-1.2.10";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1356,7 +1356,7 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
 }
 
 // SETUP
-function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, onStartNew, isSuperuser, onWatchLive, lastViewerCode }) {
+function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, savedScores = null, savedConfig = null, onNewRound, onStartNew, viewingConfig = null, onContinueViewing, onDismissViewing, isSuperuser, onWatchLive, lastViewerCode }) {
   const sc = savedConfig; // shorthand
   // Round is "in progress" when at least one hole has been played (toggled In Play).
   // Used to lock player count + lineup reorder to prevent score corruption.
@@ -1828,6 +1828,50 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           </div>
         </div>
         <div style={{ padding: "12px 16px 100px" }}>
+          {/* ── View-mode banner ──
+              User came back to Setup via 🏠 from a locked (>24h) round in
+              view-only mode. Subtle strip — single line course name + chevron
+              + dismiss. Tap body to re-enter Scorecard for continued viewing.
+              Only renders when viewingConfig is set AND no edit-mode state
+              (savedScores) — they are mutually exclusive in practice but the
+              guard makes hierarchy explicit. */}
+          {viewingConfig && !savedScores && (() => {
+            const courseLabel = viewingConfig.courseName || "Round";
+            return (
+              <div style={{
+                marginBottom: 16,
+                background: "var(--card)",
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 12px",
+              }}>
+                <div onClick={() => onContinueViewing && onContinueViewing()} style={{
+                  flex: 1, cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  <span style={{ fontSize: 14 }}>👁</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 12, color: "var(--text)", opacity: 0.7,
+                      fontFamily: "'DM Sans', sans-serif", lineHeight: 1.2,
+                    }}>Viewing</div>
+                    <div style={{
+                      fontSize: 14, color: "var(--text)", fontWeight: 600,
+                      fontFamily: "'DM Sans', sans-serif", lineHeight: 1.3,
+                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    }}>{courseLabel}</div>
+                  </div>
+                  <span style={{ fontSize: 12, color: "var(--text)", opacity: 0.55, fontFamily: "'DM Sans', sans-serif" }}>Tap to continue →</span>
+                </div>
+                <button onClick={(e) => { e.stopPropagation(); onDismissViewing && onDismissViewing(); }} style={{
+                  background: "transparent", border: "none",
+                  color: "var(--text)", opacity: 0.5,
+                  fontSize: 16, padding: "4px 6px", cursor: "pointer",
+                  fontFamily: "'DM Sans', sans-serif", lineHeight: 1,
+                }} aria-label="Dismiss">✕</button>
+              </div>
+            );
+          })()}
           {/* ── Saved scores banner ──
               User came back to Setup via 🏠 with scores preserved. Visually
               parallel to the "⏱ ROUND IN PROGRESS" banner — same color/size
@@ -1924,6 +1968,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             if (ageMs > SIX_HOURS) return null;
             // Don't show if user is already mid-resume (savedConfig is set when arriving from 🏠)
             if (sc) return null;
+            // Don't show if user is in view-mode (came back from a locked
+            // historical round). Two competing banners (Resume + Viewing)
+            // would be confusing — view-mode takes priority since it's the
+            // round the user just engaged with.
+            if (viewingConfig) return null;
             // Skip if user explicitly parked this round via "Start new" — they
             // chose to set it aside, banner shouldn't keep nagging. Round is
             // still in Recent Rounds for explicit resume.
@@ -7458,6 +7507,12 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [savedScores, setSavedScores] = useState(null);
   const [savedConfig, setSavedConfig] = useState(null);
+  // viewingConfig: separate slot for "user was viewing a locked historical
+  // round and tapped 🏠 to navigate back". Lets Setup show a small re-entry
+  // banner without conflating with the edit-mode savedConfig (which would
+  // wrongly trigger Discard/Start-new buttons). Cleared on any action that
+  // moves to a different round (START ROUND, loadRound, importPreview).
+  const [viewingConfig, setViewingConfig] = useState(null);
   const [viewerCode, setViewerCode] = useState(null); // when set, App routes to ViewerMode
   const [lastViewerCode, setLastViewerCode] = useState(() => {
     try {
@@ -7538,6 +7593,9 @@ export default function App() {
     const rid = round.config?._roundId;
     // Strip _savedScores — it takes priority over _savedState and must not bleed into resume
     const { _savedScores, ...cleanConfig } = round.config;
+    // Clear viewingConfig — loading a (different) round means user is moving
+    // on from whatever they were viewing.
+    setViewingConfig(null);
     setConfig(cleanConfig);
     window.scrollTo(0, 0);
     // Remember course from resumed round
@@ -7617,20 +7675,22 @@ export default function App() {
       {config
         ? <Scorecard config={config} onBack={(scores, rid) => {
             // If returning from a locked historical round (>24h old, not
-            // superuser), do NOT stash savedScores/savedConfig. Otherwise the
-            // "EDITING ROUND IN PROGRESS" banner appears in Setup with
-            // Resume/Start new/Discard buttons that all do wrong things for a
-            // view-only round (Resume re-enters view-only Scorecard; Discard
-            // would DELETE historical data; Start new would park a finished
-            // round as if it were unfinished). Superuser is allowed to edit
-            // locked rounds, so for them the banner correctly appears.
+            // superuser), don't stash savedScores/savedConfig (which would
+            // wrongly trigger the Edit-in-progress banner with Discard/Start
+            // new actions for a view-only round). Instead, stash into
+            // viewingConfig so Setup can show a small "Continue viewing"
+            // banner that takes user back into the same view-only Scorecard.
+            // Superuser can edit locked rounds, so for them the normal stash
+            // applies.
             const isLockedRound = rid && (Date.now() - rid > 24 * 60 * 60 * 1000) && !isSuperuser;
             if (isLockedRound) {
               setSavedScores(null);
               setSavedConfig(null);
+              setViewingConfig({ ...config, _roundId: rid });
             } else {
               setSavedScores(scores || null);
               setSavedConfig(rid ? { ...config, _roundId: rid } : config);
+              setViewingConfig(null);
             }
             setConfig(null);
           }} onSave={(rd) => saveRound(rd)} isLight={isLight} toggleTheme={toggleTheme} isSuperuser={isSuperuser} />
@@ -7642,7 +7702,7 @@ export default function App() {
               }
               setViewerCode(null);
             }} isLight={isLight} />
-          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={onDiscardRound} onStartNew={onStartNew} isSuperuser={isSuperuser} onWatchLive={(code) => {
+          : <Setup onStart={(cfg) => { setSavedScores(null); setSavedConfig(null); setViewingConfig(null); setConfig(cfg); }} savedRounds={savedRounds} onLoadRound={loadRound} isLight={isLight} toggleTheme={toggleTheme} savedScores={savedScores} savedConfig={savedConfig} onNewRound={onDiscardRound} onStartNew={onStartNew} viewingConfig={viewingConfig} onContinueViewing={() => setConfig(viewingConfig)} onDismissViewing={() => setViewingConfig(null)} isSuperuser={isSuperuser} onWatchLive={(code) => {
               setViewerCode(code);
               // Only persist as "lastViewerCode" if it's a normal user-entered code.
               // The superuser default code (0000) is never offered as a quick re-entry button.
