@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.6";
+const APP_VERSION = "vw-1.2.7";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1210,7 +1210,7 @@ function SplashContent({ onDone, isLight, isSuperuser, onLogoTap }) {
 // created. Skipped on resume (when savedScores has any inPlay==true).
 // ─────────────────────────────────────────────────────────────────────────────
 function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
-  const { courseName, playerCount, names, hcps, games, matchupBets, vegasRules, threeBallVariant, groupCode } = summary;
+  const { courseName, playerCount, names, hcps, games, matchupBets, vegasRules, threeBallVariant, groupCode, isResume } = summary;
   // Build the games line.
   // - Vegas shows ruleset: "Vegas (Standard)" / "Vegas (Classic)" / "Vegas (Aggressive)"
   //   For 3-ball play, append the variant: "Vegas (Standard, Hero or Zero)" / "Vegas (Standard, Ghost)"
@@ -1286,7 +1286,7 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
         <div style={{
           fontSize: 11, color: "var(--text)", opacity: 0.7, marginBottom: 16,
           textAlign: "center", fontFamily: "'DM Sans', sans-serif",
-        }}>Check before starting — changes after this require going back</div>
+        }}>{isResume ? "Check before resuming — changes after this require going back" : "Check before starting — changes after this require going back"}</div>
 
         {/* COURSE */}
         <div style={sectionBox}>
@@ -1348,7 +1348,7 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
             color: "#fff", borderRadius: 10, fontSize: 14,
             fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2, fontWeight: 700,
             cursor: "pointer",
-          }}>▶ START ROUND</button>
+          }}>{isResume ? "▶ RESUME ROUND" : "▶ START ROUND"}</button>
         </div>
       </div>
     </div>
@@ -1864,7 +1864,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   </div>
                 )}
                 <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginTop: 8, lineHeight: 1.4 }}>
-                  Your scores are safe. Edit any settings below{roundInProgress ? " (lineup order is locked)" : ""}, then tap <b>START ROUND</b> to resume.
+                  Your scores are safe. Edit any settings below{roundInProgress ? " (lineup order is locked)" : ""}, then tap <b>RESUME ROUND</b> to continue.
                 </div>
                 {confirmDiscard ? (
                   <div style={{
@@ -3058,7 +3058,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               proceedToStart();
             }
           }}>
-          START ROUND →
+          {savedScores ? "RESUME ROUND →" : "START ROUND →"}
         </button>
       </div>
       {/* Round Confirmation Dialog — appears before the first START ROUND of a
@@ -3082,6 +3082,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             vegasRules,
             threeBallVariant,
             groupCode,
+            isResume: !!savedScores,
           }}
           onConfirm={() => { setPendingConfirm(false); proceedToStart(); }}
           onCancel={() => setPendingConfirm(false)}
