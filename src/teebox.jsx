@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.18";
+const APP_VERSION = "vw-1.2.19";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -5929,10 +5929,30 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
               <div className="sect-title" style={{ fontSize: 13, color: "var(--accent)", letterSpacing: 2, textTransform: "uppercase", fontFamily: "'DM Sans', sans-serif", fontWeight: "700" }}>Gross Scores</div>
               {/* Inline In Play toggle */}
               <div onClick={() => {
+                const turningOff = inPlay[holeIdx];
                 setInPlay(prev => {
                   const n = [...prev]; n[holeIdx] = !n[holeIdx];
                   return n;
                 });
+                // When toggling OFF, reset gross at this hole back to default
+                // (par for all players) so any reader summing the gross array
+                // gets the right answer regardless of whether it checks
+                // in_play. Keeps Supabase row + downstream consumers (Sankaku,
+                // Vegas/CT/Banker computations) consistent without forcing
+                // every reader to gate on in_play.
+                if (turningOff) {
+                  setGross(prev => {
+                    const n = prev.map(r => [...r]);
+                    n[holeIdx] = Array(N).fill(String(h.par));
+                    return n;
+                  });
+                  if (ghostEnabled) {
+                    setGhostGross(prev => {
+                      const n = [...prev]; n[holeIdx] = String(h.par);
+                      return n;
+                    });
+                  }
+                }
               }} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", userSelect: "none" }}>
                 <div style={{ width: 40, height: 22, borderRadius: 11, background: inPlay[holeIdx] ? "var(--accent)" : "var(--neg)", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
                   <div style={{ width: 16, height: 16, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: inPlay[holeIdx] ? 21 : 3, transition: "left 0.2s" }} />
