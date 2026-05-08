@@ -4,13 +4,17 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.14";
+const APP_VERSION = "vw-1.2.18";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
 // and superuser can spectate any round. Regular users are blocked from entering
 // this code in Setup. Only superuser can enter it in WATCH LIVE viewer.
 const SUPERUSER_DEFAULT_CODE = "0000";
+// Sentinel for the superuser "WATCH ALL" view — drops the group_code filter
+// in ViewerMode so every flight today is visible regardless of code. Never
+// stored in Supabase, never offered as quick-return code.
+const ALL_CODES_SENTINEL = "__ALL__";
 
 // Device ID: persistent random UUID per install. Used to group rounds without auth.
 function getDeviceId() {
@@ -2107,9 +2111,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               <span>▶</span><span>WATCH LIVE · {lastViewerCode}</span>
             </button>
           )}
-          {/* Superuser: spectate the catch-all bucket (rounds with no user-set Live code) */}
+          {/* Superuser: spectate ALL flights today regardless of group code (debug + cross-code visibility) */}
           {isSuperuser && onWatchLive && (
-            <button onClick={() => onWatchLive(SUPERUSER_DEFAULT_CODE)}
+            <button onClick={() => onWatchLive(ALL_CODES_SENTINEL)}
               style={{
                 width: "100%", marginBottom: 16, padding: "10px 14px",
                 background: "transparent",
@@ -4018,7 +4022,12 @@ function FlightScorecard({ flight, taggedName, isLight }) {
         {label}
       </div>
       <div style={{ overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 12 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 12, tableLayout: "fixed" }}>
+          <colgroup>
+            <col style={{ width: 40 }} />
+            <col style={{ width: 50 }} />
+            {players.map((_, pi) => <col key={pi} />)}
+          </colgroup>
           <thead>
             <tr style={{ background: isLight ? "#f3f4f6" : "#0b1f0e" }}>
               <th style={cellHead}>H</th>
@@ -4072,13 +4081,18 @@ function FlightScorecard({ flight, taggedName, isLight }) {
     <div style={{ padding: "12px 12px 0" }}>
       {renderNine(0, "FRONT 9")}
       {renderNine(9, "BACK 9")}
-      {/* Totals strip */}
+      {/* Totals strip — column template mirrors the table above (40px H +
+          50px PAR + N×1fr) so the player totals land directly under their
+          column headers. Without this matching, the table's auto-distributed
+          widths and the strip's grid widths drift apart, leaving values
+          shifted left of their columns. */}
       <div style={{
-        marginTop: 4, padding: "10px 12px",
+        marginTop: 4, padding: "10px 0",
         background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)",
-        display: "grid", gridTemplateColumns: `60px repeat(${N}, 1fr)`, gap: 6, alignItems: "center",
+        display: "grid", gridTemplateColumns: `40px 50px repeat(${N}, 1fr)`, alignItems: "center",
       }}>
-        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 12, letterSpacing: 2, color: "var(--accent)" }}>VS PAR</div>
+        <div />
+        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 12, letterSpacing: 2, color: "var(--accent)", textAlign: "center" }}>VS PAR</div>
         {players.map((name, pi) => {
           const t = totals[pi];
           const txt = t.gross === 0 ? "—" : t.vsPar === 0 ? "E" : t.vsPar > 0 ? `+${t.vsPar}` : `−${Math.abs(t.vsPar)}`;
@@ -4127,13 +4141,114 @@ function ViewerMode({ groupCode, onBack, isLight }) {
     } catch(_) {}
     setConfirmTag(null);
   }
+
+  // ── Manual flight linking (Phase B) ─────────────────────────────────────
+  // Superuser tool for the ALL_CODES_SENTINEL view: when two devices are
+  // logging the same physical flight under different group codes, the
+  // superuser can link them together so the leaderboard shows one consolidated
+  // entry (using the primary's scores) instead of duplicate rows.
+  //
+  // Persisted to localStorage scoped by SGT date (auto-expires next day).
+  // Key: sws_linked_flights_<YYYY-MM-DD>
+  // Value: [{ id: timestamp, roundIds: [r1, r2, ...], primaryRoundId: r1 }]
+  const linkKey = React.useMemo(() => {
+    const todaySGT = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" });
+    return `sws_linked_flights_${todaySGT}`;
+  }, []);
+  const [linkedGroups, setLinkedGroups] = useState(() => {
+    try {
+      const raw = localStorage.getItem(linkKey);
+      return raw ? JSON.parse(raw) : [];
+    } catch(_) { return []; }
+  });
+  // Linking flow: null = idle, "armed" = waiting for first pick,
+  // string roundId = first row picked, waiting for second
+  const [linkingFrom, setLinkingFrom] = useState(null);
+  function persistLinked(groups) {
+    setLinkedGroups(groups);
+    try { localStorage.setItem(linkKey, JSON.stringify(groups)); } catch(_) {}
+  }
+  // Find which linked group (if any) a given roundId belongs to
+  function findLinkGroup(rid) {
+    return linkedGroups.find(g => g.roundIds.includes(rid));
+  }
+  // Link two flights together. If either is already in a group, merge.
+  function linkFlights(rid1, rid2) {
+    if (rid1 === rid2) return;
+    const g1 = findLinkGroup(rid1);
+    const g2 = findLinkGroup(rid2);
+    let next;
+    if (g1 && g2 && g1.id === g2.id) return; // already linked
+    if (g1 && g2) {
+      // Merge two groups: keep g1's primary, absorb g2's roundIds
+      const merged = {
+        ...g1,
+        roundIds: [...new Set([...g1.roundIds, ...g2.roundIds])],
+      };
+      next = linkedGroups.filter(g => g.id !== g1.id && g.id !== g2.id).concat(merged);
+    } else if (g1) {
+      next = linkedGroups.map(g => g.id === g1.id
+        ? { ...g, roundIds: [...new Set([...g.roundIds, rid2])] }
+        : g);
+    } else if (g2) {
+      next = linkedGroups.map(g => g.id === g2.id
+        ? { ...g, roundIds: [...new Set([...g.roundIds, rid1])] }
+        : g);
+    } else {
+      next = [...linkedGroups, { id: Date.now(), roundIds: [rid1, rid2], primaryRoundId: rid1 }];
+    }
+    persistLinked(next);
+  }
+  function unlinkRound(rid) {
+    const g = findLinkGroup(rid);
+    if (!g) return;
+    const remaining = g.roundIds.filter(r => r !== rid);
+    if (remaining.length < 2) {
+      // A group with <2 flights is meaningless — drop the whole group
+      persistLinked(linkedGroups.filter(x => x.id !== g.id));
+    } else {
+      // Reassign primary if the removed round was primary
+      const nextPrimary = g.primaryRoundId === rid ? remaining[0] : g.primaryRoundId;
+      persistLinked(linkedGroups.map(x =>
+        x.id === g.id ? { ...x, roundIds: remaining, primaryRoundId: nextPrimary } : x
+      ));
+    }
+  }
+  function makePrimary(rid) {
+    const g = findLinkGroup(rid);
+    if (!g) return;
+    persistLinked(linkedGroups.map(x =>
+      x.id === g.id ? { ...x, primaryRoundId: rid } : x
+    ));
+  }
+  // Click handler in linking mode: pick first or complete the pair
+  function handleLinkPick(rid) {
+    if (linkingFrom === "armed") {
+      setLinkingFrom(rid);
+    } else if (linkingFrom && linkingFrom !== rid) {
+      linkFlights(linkingFrom, rid);
+      setLinkingFrom(null);
+    } else if (linkingFrom === rid) {
+      // Tapped same row — cancel selection but stay armed
+      setLinkingFrom("armed");
+    }
+  }
+  // Linking mode is only available in ALL_CODES_SENTINEL view
+  const linkingEnabled = groupCode === ALL_CODES_SENTINEL;
+  const inLinkingMode = linkingFrom !== null;
+
   async function refresh() {
     setLoading(true);
     setError("");
     try {
       const todaySGT = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Singapore" });
       const sinceParam = `&created_at=gte.${todaySGT}T00:00:00%2B08:00`;
-      const url = `${SUPA_URL_BASE}/rounds_full?group_code=eq.${encodeURIComponent(groupCode)}&total_holes_played=gt.0${sinceParam}&order=created_at.desc&limit=20`;
+      // ALL_CODES_SENTINEL: superuser-only "see every flight today" view.
+      // Drops the group_code filter so flights logged under different codes
+      // (or no code at all → 0000) are all visible side-by-side.
+      const isAllCodes = groupCode === ALL_CODES_SENTINEL;
+      const groupParam = isAllCodes ? "" : `&group_code=eq.${encodeURIComponent(groupCode)}`;
+      const url = `${SUPA_URL_BASE}/rounds_full?total_holes_played=gt.0${groupParam}${sinceParam}&order=created_at.desc&limit=20`;
       const res = await fetch(url, { headers: SUPA_HDR });
       if (!res.ok) throw new Error("Network error");
       const data = await res.json();
@@ -4148,6 +4263,7 @@ function ViewerMode({ groupCode, onBack, isLight }) {
           roundId: flight.round_id,
           courseName: flight.course_name || "Round",
           flightLabel: `Flight ${fi + 1}`,
+          groupCode: flight.group_code || SUPERUSER_DEFAULT_CODE,
           createdAt: flight.created_at,
           scores,
           // Raw data for FlightScorecard render
@@ -4182,8 +4298,20 @@ function ViewerMode({ groupCode, onBack, isLight }) {
     return `${Math.floor(sec/3600)}h ago`;
   }
   // Flatten all scores from all flights, sort by vsPar
+  // Linked-flight handling: when two flights are linked, the leaderboard
+  // shows only the primary's scores (avoids double-counting players when
+  // two devices log the same physical flight).
+  const linkedNonPrimary = new Set();
+  linkedGroups.forEach(g => {
+    g.roundIds.forEach(rid => {
+      if (rid !== g.primaryRoundId) linkedNonPrimary.add(rid);
+    });
+  });
   const allScores = [];
-  flights.forEach((f, fi) => f.scores.forEach(s => allScores.push({ ...s, flightLabel: f.flightLabel, flightIdx: fi })));
+  flights.forEach((f, fi) => {
+    if (linkedNonPrimary.has(f.roundId)) return;
+    f.scores.forEach(s => allScores.push({ ...s, flightLabel: f.flightLabel, flightIdx: fi, groupCode: f.groupCode }));
+  });
   allScores.sort((a, b) => a.vsPar - b.vsPar);
   // Compute tied positions: T2, T2 for ties
   let lastVsPar = null;
@@ -4241,7 +4369,7 @@ function ViewerMode({ groupCode, onBack, isLight }) {
           {/* Title block */}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 22, letterSpacing: 4, color: "var(--text)", lineHeight: 1, paddingTop: 2 }}>
-              TEEBOX {groupCode}
+              {groupCode === ALL_CODES_SENTINEL ? "TEEBOX · ALL" : `TEEBOX ${groupCode}`}
             </div>
             {flights.length > 0 && (
               <div style={{ fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 10, letterSpacing: 1.5, color: "var(--accent)", textTransform: "uppercase", fontWeight: 700, marginTop: 2 }}>
@@ -4274,13 +4402,53 @@ function ViewerMode({ groupCode, onBack, isLight }) {
               <TeeBoxLogo size={64} />
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>No active flights</div>
-            <div style={{ fontSize: 13, opacity: 0.7 }}>No flights have started logging holes for code {groupCode} today.</div>
+            <div style={{ fontSize: 13, opacity: 0.7 }}>
+              {groupCode === ALL_CODES_SENTINEL
+                ? "No flights have started logging holes today."
+                : `No flights have started logging holes for code ${groupCode} today.`}
+            </div>
             <div style={{ fontSize: 12, opacity: 0.6, marginTop: 16 }}>Tap ↻ to check again.</div>
           </div>
         )}
         {/* Leaderboard */}
         {allScores.length > 0 && (
           <>
+            {/* Link-flights toolbar (all-codes mode only, 2+ flights present) */}
+            {linkingEnabled && flights.length >= 2 && (
+              <div style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                gap: 10, padding: "10px 16px",
+                background: inLinkingMode ? "rgba(74,222,128,0.08)" : "transparent",
+                borderBottom: inLinkingMode ? `1px solid var(--accent)` : "1px solid var(--border)",
+              }}>
+                <div style={{
+                  fontFamily: "'JetBrains Mono', monospace, 'Courier New'",
+                  fontSize: 11, letterSpacing: 1, color: "var(--text)", flex: 1, minWidth: 0,
+                }}>
+                  {inLinkingMode
+                    ? (linkingFrom === "armed"
+                        ? "🔗 Tap a flight below to start linking…"
+                        : "🔗 Now tap a second flight to link them.")
+                    : (linkedGroups.length > 0
+                        ? `🔗 ${linkedGroups.length} link group${linkedGroups.length > 1 ? "s" : ""} active`
+                        : "Link two flights when same physical group has multiple devices.")
+                  }
+                </div>
+                {!inLinkingMode ? (
+                  <button onClick={() => setLinkingFrom("armed")} style={{
+                    background: "transparent", color: "var(--accent)", border: "1px solid var(--accent)",
+                    padding: "6px 11px", borderRadius: 6, cursor: "pointer", flexShrink: 0,
+                    fontFamily: "'DM Sans', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: 1,
+                  }}>🔗 LINK</button>
+                ) : (
+                  <button onClick={() => setLinkingFrom(null)} style={{
+                    background: "transparent", color: "var(--neg)", border: "1px solid var(--neg)",
+                    padding: "6px 11px", borderRadius: 6, cursor: "pointer", flexShrink: 0,
+                    fontFamily: "'DM Sans', sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: 1,
+                  }}>✕ CANCEL</button>
+                )}
+              </div>
+            )}
             {/* Column headers */}
             <div style={{
               display: "grid", gridTemplateColumns: "50px 1fr 70px 80px",
@@ -4320,6 +4488,12 @@ function ViewerMode({ groupCode, onBack, isLight }) {
               return (
                 <div key={idx}
                   onClick={() => {
+                    if (inLinkingMode) {
+                      // Linking mode: tap picks this flight's round for linking
+                      const flight = flights[s.flightIdx];
+                      if (flight) handleLinkPick(flight.roundId);
+                      return;
+                    }
                     // Tap behavior:
                     // - If already tagged as this player → prompt to untag
                     // - Otherwise → prompt to tag as this player
@@ -4361,12 +4535,20 @@ function ViewerMode({ groupCode, onBack, isLight }) {
                       <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</span>
                       {s.hasBirdie && <span style={{ fontSize: 14, filter: "drop-shadow(0 0 4px rgba(251,191,36,0.5))" }}>🐦</span>}
                     </div>
-                    <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
                       <span style={{
                         fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 9, fontWeight: 700,
                         padding: "2px 5px", borderRadius: 2, letterSpacing: 1,
                         background: flightBg[fIdx], color: flightColors[fIdx],
                       }}>F{(s.flightIdx || 0) + 1}</span>
+                      {groupCode === ALL_CODES_SENTINEL && s.groupCode && (
+                        <span style={{
+                          fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 9, fontWeight: 700,
+                          padding: "2px 5px", borderRadius: 2, letterSpacing: 1,
+                          background: "transparent", color: "var(--muted)",
+                          border: "1px solid var(--border)",
+                        }}>{s.groupCode}</span>
+                      )}
                     </div>
                   </div>
                   {/* THRU */}
@@ -4400,6 +4582,125 @@ function ViewerMode({ groupCode, onBack, isLight }) {
             }}>
               {loading ? "REFRESHING…" : `UPDATED ${fmtTimeAgo(lastFetchedAt).toUpperCase()}`}
             </div>
+            {/* Flights panel — shown in all-codes mode for link management.
+                Lists every flight with players + group code + linked-group chip,
+                surfaces Make Primary / Unlink controls, and is the tap target
+                during linking mode (so non-primary linked flights stay reachable
+                even when hidden from the leaderboard). */}
+            {linkingEnabled && flights.length > 0 && (
+              <div style={{ padding: "16px 16px 8px" }}>
+                <div style={{
+                  fontFamily: "'Bebas Neue', sans-serif", fontSize: 13, letterSpacing: 3,
+                  color: "var(--accent)", marginBottom: 10,
+                }}>FLIGHTS · {flights.length}</div>
+                {(() => {
+                  // Group flights by linkedGroup for visual grouping; ungrouped flights
+                  // each render as their own pseudo-group of size 1.
+                  const buckets = [];
+                  const seen = new Set();
+                  flights.forEach((f, fi) => {
+                    if (seen.has(f.roundId)) return;
+                    const lg = findLinkGroup(f.roundId);
+                    if (lg) {
+                      const groupFlights = flights
+                        .map((ff, ffi) => ({ ff, ffi }))
+                        .filter(x => lg.roundIds.includes(x.ff.roundId));
+                      groupFlights.forEach(x => seen.add(x.ff.roundId));
+                      buckets.push({ kind: "linked", group: lg, flights: groupFlights });
+                    } else {
+                      seen.add(f.roundId);
+                      buckets.push({ kind: "solo", group: null, flights: [{ ff: f, ffi: fi }] });
+                    }
+                  });
+                  return buckets.map((b, bi) => {
+                    const isLinked = b.kind === "linked";
+                    return (
+                      <div key={bi} style={{
+                        marginBottom: 10, borderRadius: 8,
+                        border: isLinked ? `1.5px solid var(--accent)` : `1px solid var(--border)`,
+                        background: isLinked ? "rgba(74,222,128,0.05)" : "var(--card)",
+                        overflow: "hidden",
+                      }}>
+                        {isLinked && (
+                          <div style={{
+                            background: "var(--accent)", color: isLight ? "#fff" : "#0a1a0a",
+                            padding: "5px 10px",
+                            fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 10, fontWeight: 700, letterSpacing: 1.5,
+                          }}>
+                            🔗 LINKED · {b.flights.length} DEVICES
+                          </div>
+                        )}
+                        {b.flights.map(({ ff, ffi }, fIdxInGroup) => {
+                          const isPrimary = isLinked && b.group.primaryRoundId === ff.roundId;
+                          const isLinkSource = linkingFrom === ff.roundId;
+                          const isLinkArmed = linkingFrom === "armed";
+                          const playerNames = (ff.players || []).filter(Boolean).join(", ") || "(no players)";
+                          return (
+                            <div key={ff.roundId}
+                              onClick={inLinkingMode ? () => handleLinkPick(ff.roundId) : undefined}
+                              style={{
+                                padding: "10px 12px",
+                                borderTop: fIdxInGroup > 0 ? "1px solid var(--border)" : "none",
+                                cursor: inLinkingMode ? "pointer" : "default",
+                                background: isLinkSource ? "rgba(74,222,128,0.18)" : "transparent",
+                                opacity: inLinkingMode && !isLinkArmed && !isLinkSource && !findLinkGroup(ff.roundId) ? 1 :
+                                         (isLinked && !isPrimary ? 0.85 : 1),
+                              }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                                <span style={{
+                                  fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 9, fontWeight: 700,
+                                  padding: "2px 5px", borderRadius: 2, letterSpacing: 1,
+                                  background: "var(--card)", color: "var(--text)",
+                                  border: "1px solid var(--border)",
+                                }}>F{ffi + 1}</span>
+                                <span style={{
+                                  fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 9, fontWeight: 700,
+                                  padding: "2px 5px", borderRadius: 2, letterSpacing: 1,
+                                  background: "transparent", color: "var(--muted)",
+                                  border: "1px solid var(--border)",
+                                }}>{ff.groupCode}</span>
+                                {isPrimary && (
+                                  <span style={{
+                                    fontFamily: "'JetBrains Mono', monospace, 'Courier New'", fontSize: 9, fontWeight: 700,
+                                    padding: "2px 5px", borderRadius: 2, letterSpacing: 1,
+                                    background: "var(--accent)", color: isLight ? "#fff" : "#0a1a0a",
+                                  }}>★ PRIMARY</span>
+                                )}
+                                <span style={{
+                                  fontFamily: "'DM Sans', sans-serif", fontSize: 11, color: "var(--muted)",
+                                  marginLeft: "auto",
+                                }}>{ff.courseName}</span>
+                              </div>
+                              <div style={{
+                                fontFamily: "'DM Sans', sans-serif", fontSize: 12, color: "var(--text)",
+                                marginBottom: isLinked && !inLinkingMode ? 8 : 0,
+                              }}>{playerNames}</div>
+                              {/* Action buttons (idle mode only) */}
+                              {!inLinkingMode && isLinked && (
+                                <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+                                  {!isPrimary && (
+                                    <button onClick={(e) => { e.stopPropagation(); makePrimary(ff.roundId); }} style={{
+                                      background: "transparent", color: "var(--accent)", border: "1px solid var(--accent)",
+                                      padding: "5px 10px", borderRadius: 6, cursor: "pointer",
+                                      fontFamily: "'DM Sans', sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: 1,
+                                    }}>★ MAKE PRIMARY</button>
+                                  )}
+                                  <button onClick={(e) => { e.stopPropagation(); unlinkRound(ff.roundId); }} style={{
+                                    background: "transparent", color: "var(--neg)", border: "1px solid var(--neg)",
+                                    padding: "5px 10px", borderRadius: 6, cursor: "pointer",
+                                    fontFamily: "'DM Sans', sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: 1,
+                                  }}>✕ UNLINK</button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            )}
             {/* MY FLIGHT scorecard — shown when tagged */}
             {tagged && (() => {
               // Find the raw flight data matching tagged.flightIdx
@@ -5025,7 +5326,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         app_version: APP_VERSION,
         course_name: config.courseName || "Custom",
         course_holes: holes,
-        group_code: (config.groupCode && config.groupCode.trim()) || SUPERUSER_DEFAULT_CODE,
+        group_code: stickyGroupCodeRef.current
+          || (config.groupCode && config.groupCode.trim())
+          || SUPERUSER_DEFAULT_CODE,
         player_count: N,
         players: playersArr,
         games_enabled: games,
@@ -5117,6 +5420,18 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   // Stores: array of { name, color, vsPar, lastHole } per player from all flights.
   const [scoresTicker, setScoresTicker] = useState(null); // null = hidden, [] = empty pass, [{...}] = showing
   const groupCode = (config.groupCode || "").trim();
+  // Sticky group code: once a round has a real (non-empty, non-superuser-default)
+  // group code at any point during its lifetime, NEVER let it revert to the
+  // SUPERUSER_DEFAULT_CODE fallback on save. This guards against any state
+  // path that accidentally clears config.groupCode mid-round (e.g. resume via
+  // an unusual entry point) — TeeBox would otherwise overwrite the Supabase
+  // row's group_code with "0000", silently breaking tournament auto-match.
+  // The ref persists for the Scorecard's lifetime; on a fresh START it
+  // re-captures from the new config.
+  const stickyGroupCodeRef = React.useRef(groupCode || null);
+  if (groupCode && groupCode !== SUPERUSER_DEFAULT_CODE) {
+    stickyGroupCodeRef.current = groupCode;
+  }
   // Effective code used for logging — falls back to superuser default if user didn't set one.
   // This means EVERY round logs per-hole to Supabase. The user-set groupCode still gates
   // visible UI features (live ticker, celebration toasts) so regular users don't see other
@@ -7799,7 +8114,7 @@ export default function App() {
         : viewerCode
           ? <ViewerMode groupCode={viewerCode} onBack={() => {
               // Bump timestamp on exit so the 15-min quick-return window starts now
-              if (viewerCode && viewerCode !== SUPERUSER_DEFAULT_CODE) {
+              if (viewerCode && viewerCode !== SUPERUSER_DEFAULT_CODE && viewerCode !== ALL_CODES_SENTINEL) {
                 try { localStorage.setItem("sws_last_viewer_at", String(Date.now())); } catch(_) {}
               }
               setViewerCode(null);
@@ -7824,8 +8139,9 @@ export default function App() {
               onWatchLive={(code) => {
               setViewerCode(code);
               // Only persist as "lastViewerCode" if it's a normal user-entered code.
-              // The superuser default code (0000) is never offered as a quick re-entry button.
-              if (code !== SUPERUSER_DEFAULT_CODE) {
+              // The superuser default code (0000) and the ALL_CODES_SENTINEL are
+              // never offered as a quick re-entry button.
+              if (code !== SUPERUSER_DEFAULT_CODE && code !== ALL_CODES_SENTINEL) {
                 setLastViewerCode(code);
                 try {
                   localStorage.setItem("sws_last_viewer_code", code);
