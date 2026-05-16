@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.19";
+const APP_VERSION = "vw-1.2.20";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -452,6 +452,35 @@ function computePar3(nett, banker, mults) {
   return d;
 }
 
+function casinoGrossBonus(gross, par, birdieMult, eagleMult) {
+  const g = parseInt(gross, 10);
+  if (isNaN(g) || g <= 0) return 1;
+  if (g <= par - 2) return eagleMult;
+  if (g === par - 1) return birdieMult;
+  return 1;
+}
+
+// Casino — all-pairs cut throat; stake per pair = effectiveMult[i] × effectiveMult[j]
+// effectiveMult[i] = calledMult[i] × grossBonus (birdie/eagle from gross score)
+function computeCasino(nett, calledMults, grossArr, par, birdieMult, eagleMult) {
+  const N = nett.length;
+  const d = Array(N).fill(0);
+  const effective = nett.map((_, i) => {
+    const called = Number(calledMults[i]) || 1;
+    const gb = casinoGrossBonus(grossArr[i], par, birdieMult, eagleMult);
+    return called * gb;
+  });
+  for (let i = 0; i < N; i++) {
+    for (let j = i + 1; j < N; j++) {
+      if (nett[i] === null || nett[j] === null) continue;
+      const stake = effective[i] * effective[j];
+      if (nett[i] < nett[j]) { d[i] += stake; d[j] -= stake; }
+      else if (nett[j] < nett[i]) { d[j] += stake; d[i] -= stake; }
+    }
+  }
+  return d;
+}
+
 // NASSAU COMPUTATION
 function nassauStrokeSIs(strokes, siList) {
   if (strokes === 0) return { p1: new Set(), p2: new Set() };
@@ -831,7 +860,7 @@ function haptic(style = "light") {
   } catch(_) {}
 }
 
-async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, ptsCum, vegasVal, ctVal, p3Val, ptsVal, adjustments, games, matchupEnabled, nassauResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName, roundStartTime, qrPayload, playerCount, vegasPlayers, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }) {
+async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, casinoCum, ptsCum, vegasVal, ctVal, p3Val, casinoVal, ptsVal, adjustments, games, matchupEnabled, nassauResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName, roundStartTime, qrPayload, playerCount, vegasPlayers, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }) {
   const isSolo = playerCount === 1;
   const RP = names.map((_,i) => i);
   // Generate QR data URL if qrcode-generator library is loaded
@@ -1049,14 +1078,14 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     <h2>$$$ Summary</h2>
     <table>
       <tr><th style="text-align:left"></th>${names.map(n=>`<th>${n.slice(0,8)}</th>`).join("")}</tr>
-      ${(games.pts||games.vegas||games.ct||games.p3) ? (()=>{
+      ${(games.pts||games.vegas||games.ct||games.p3||games.casino) ? (()=>{
         // Show HCP/Next if Vegas/CT/Banker is active (next HCP only meaningful for betting games)
         // Show HCP alone if only Points Game is active
-        const showNext = games.vegas || games.ct || games.p3;
+        const showNext = games.vegas || games.ct || games.p3 || games.casino;
         const label = showNext ? "HCP/Next" : "HCP";
         return `<tr style="background:#f8f8f8"><td class="label" style="color:#333;font-size:11px">${label}</td>${names.map((_,i)=>`<td style="font-size:${showNext?11:12}px;color:#333;text-align:center">${relHcps[i]}${showNext?` / <b>${nextRelHcps[i]}</b>`:""}</td>`).join("")}</tr>`;
       })() : ""}
-      ${games.vegas ? `<tr><td class="label">Vegas${hzEnabled?" (Hero or Zero)":ghostEnabled?" (Ghost)":""}</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}      ${(games.vegas||games.ct||games.p3)?`<tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.pts||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
+      ${games.vegas ? `<tr><td class="label">Vegas${hzEnabled?" (Hero or Zero)":ghostEnabled?" (Ghost)":""}</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.casino ? `<tr><td class="label">Casino</td>${RP.map(i=>{const v=(casinoCum[i]||0)*casinoVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}      ${(games.vegas||games.ct||games.p3||games.casino)?`<tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.pts||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
       ${games.pts && ptsCum ? `<tr><td class="label">${ptsVal===0?"Pts (pt)":`Pts ($${ptsVal})`}</td>${RP.map(i=>{const v=ptsVal>0?RP.reduce((s,j)=>j!==i?s+(ptsCum[i]-ptsCum[j])*ptsVal:s,0):ptsCum[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${v||"—"}</td>`;}).join("")}</tr>`:""}
       ${sixesEnabled ? `<tr><td class="label">${sixesConfig.stakeType==="cash"?`Sixes ($${sixesConfig.cashAmount})`:(()=>{const tot=sixesPlayerTokens.reduce((s,v)=>s+v,0);return`Sixes (${tot} token${tot===1?"":"s"})`;})()}</td>${RP.map(i=>{if(sixesConfig.stakeType==="cash"){const v=sixesPlayerDollars[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}else{const v=sixesPlayerTokens[i];return`<td>${v||"—"}</td>`;}}).join("")}</tr>`:""}
       ${matchupEnabled ? (()=>{
@@ -1252,6 +1281,7 @@ function RoundConfirmDialog({ summary, onConfirm, onCancel, isLight }) {
   }
   if (games.ct) gameBits.push("CT");
   if (games.p3) gameBits.push("Banker");
+  if (games.casino) gameBits.push("Casino");
   if (games.pts) gameBits.push("Pts");
   // Matchup bets: collect distinct types present in the configured matchups.
   if (matchupBets && matchupBets.on && Array.isArray(matchupBets.matchups) && matchupBets.matchups.length > 0) {
@@ -1417,6 +1447,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [vegasVal, setVegasVal] = useState(sc?.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(sc?.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(sc?.p3Val ?? 5);
+  const [casinoVal, setCasinoVal] = useState(sc?.casinoVal ?? 3);
+  const [casinoBirdieMult, setCasinoBirdieMult] = useState(sc?.casinoBirdieMult ?? 2);
+  const [casinoEagleMult, setCasinoEagleMult] = useState(sc?.casinoEagleMult ?? 4);
   const [bankerNett, setBankerNett] = useState(sc?.bankerNett ?? true);
   const [hcpCap, setHcpCap] = useState(sc?.hcpCap ?? null);
   const [vegasRules, setVegasRules] = useState(sc?.vegasRules ?? "council");
@@ -1480,8 +1513,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
     } catch(_) {}
     return PRESET_COURSES[0];
   });
-  const [games, setGames] = useState(sc?.games || { vegas: true, ct: true, p3: true, pts: false, sixes: false });
+  const [games, setGames] = useState(sc?.games || { vegas: true, ct: true, p3: true, pts: false, sixes: false, casino: false });
   const [vegasPlayers, setVegasPlayers] = useState(() => sc?.vegasPlayers || [0,1,2,3]);
+  const [casinoPlayers, setCasinoPlayers] = useState(() => {
+    if (sc?.casinoPlayers) return sc.casinoPlayers.filter(i => i < (sc.playerCount || 4));
+    return Array.from({ length: sc?.playerCount || 4 }, (_, i) => i);
+  });
   // When playerCount drops below current vegasPlayers indices, reset to first 4
   React.useEffect(() => {
     setVegasPlayers(prev => {
@@ -1489,6 +1526,17 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       if (valid.length === 4) return prev;
       const all = Array.from({length: playerCount}, (_,i) => i);
       return all.slice(0, 4);
+    });
+  }, [playerCount]);
+  React.useEffect(() => {
+    setCasinoPlayers(prev => {
+      const valid = prev.filter(i => i < playerCount);
+      if (valid.length >= 2 && valid.length === prev.filter(i => i < playerCount).length && valid.length === Math.min(prev.length, playerCount)) {
+        // Keep selection when resizing down if still valid; expand to all when count grows
+        if (valid.length === playerCount) return valid;
+        if (valid.length >= 2 && prev.length <= playerCount) return valid;
+      }
+      return Array.from({ length: playerCount }, (_, i) => i);
     });
   }, [playerCount]);
   // Auto-adjust game defaults when player count changes — only if not restoring from config
@@ -1512,6 +1560,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const canP3    = playerCount >= 2;
   const canMatchup = playerCount >= 2;
   const canPts   = playerCount >= 3;
+  const canCasino = playerCount >= 2;
   const canSixes = playerCount === 4 || playerCount === 5 || playerCount === 6;
   const [matchupBets, setMatchupBets] = useState(sc?.nassau || { on: false, matchups: DEFAULT_MATCHUP.map(m => ({ ...m })) });
   const [sixesConfig, setSixesConfig] = useState(() => {
@@ -1693,7 +1742,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       hcps: hcps.slice(0, playerCount),
       playerCount,
       vegasPlayers: playerCount >= 4 ? vegasPlayers.filter(i => i < playerCount).slice(0,4) : [0,1,2,3],
-      holes, vegasVal, ctVal, p3Val, hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
+      casinoPlayers: (casinoPlayers.filter(i => i < playerCount).length >= 2
+        ? casinoPlayers.filter(i => i < playerCount)
+        : Array.from({ length: playerCount }, (_, i) => i)),
+      holes, vegasVal, ctVal, p3Val, casinoVal, casinoBirdieMult, casinoEagleMult,
+      hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
       threeBallVariant, hzBonus,
       capPar3, capOther,
       games: {
@@ -1702,6 +1755,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
         p3: canP3 && games.p3,
         pts: canPts && games.pts,
         sixes: canSixes && games.sixes,
+        casino: canCasino && games.casino,
       },
       nassau: matchupBets,
       sixesConfig,
@@ -1752,8 +1806,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 const cfg = importPreview.config;
                 const ss = cfg._savedState;
                 if (!ss) return <div key={pi} />;
-                const _NP=ss.liveHcps.length;const vCum=Array(_NP).fill(0),cCum=Array(_NP).fill(0),pCum=Array(_NP).fill(0);
+                const _NP=ss.liveHcps.length;const vCum=Array(_NP).fill(0),cCum=Array(_NP).fill(0),pCum=Array(_NP).fill(0),casCum=Array(_NP).fill(0);
                 const _vp=cfg.vegasPlayers||[0,1,2,3];
+                const _cp=(cfg.casinoPlayers||Array.from({length:_NP},(_,i)=>i)).filter(p=>p<_NP);
                 cfg.holes.forEach((h,hi) => {
                   if (!ss.inPlay[hi]) return;
                   const g=ss.gross[hi];
@@ -1761,8 +1816,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   if (cfg.games.vegas){const vr=computeVegas(ss.vTeams[hi],g,n,h.par);if(vr){ss.vTeams[hi][0].forEach(p=>{vCum[p]+=vr.netA;});ss.vTeams[hi][1].forEach(p=>{vCum[p]+=vr.netB;});}}
                   if (cfg.games.ct){const vpN=_vp.map(p=>n[p]);const ct=computeCutThroat(vpN);_vp.forEach((p,idx)=>cCum[p]+=ct[idx]);}
                   if (cfg.games.p3&&h.par===3){const vpN=_vp.map(p=>n[p]);const vpBi=_vp.indexOf(ss.banker[hi])>=0?_vp.indexOf(ss.banker[hi]):0;const vpM=_vp.map(p=>ss.p3mult[hi]?.[p]||1);const p3=computePar3(vpN,vpBi,vpM);_vp.forEach((p,idx)=>pCum[p]+=p3[idx]);}
+                  if (cfg.games.casino&&_cp.length>=2){const cpN=_cp.map(p=>n[p]);const cpG=_cp.map(p=>g[p]);const cpM=_cp.map(p=>ss.casinoMult?.[hi]?.[p]||1);const cas=computeCasino(cpN,cpM,cpG,h.par,cfg.casinoBirdieMult??2,cfg.casinoEagleMult??4);_cp.forEach((p,idx)=>casCum[p]+=cas[idx]);}
                 });
-                const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments?.[pi]||0);
+                const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(cfg.games.casino?casCum[pi]*(cfg.casinoVal??3):0)+(ss.adjustments?.[pi]||0);
                 // Nassau
                 let nassauD = 0;
                 if (cfg.nassau?.on && ss.matchups) {
@@ -2441,7 +2497,81 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 </div>
               );
             })}
+            {/* ── Casino ── */}
+            <div style={{ marginTop: 4, marginBottom: 10, paddingTop: 10, borderTop: "1px solid var(--border2)" }}>
+              <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>CASINO</div>
+              {playerCount > 4 && games.casino && (
+                <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: 12, color: "var(--text)", letterSpacing: 1, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>CASINO GROUP — PICK PLAYERS (MIN 2)</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {Array.from({ length: playerCount }, (_, i) => {
+                      const isIn = casinoPlayers.includes(i);
+                      const col = isLight ? COLORS_LIGHT[i] : COLORS[i];
+                      return (
+                        <button key={i} onClick={() => {
+                          if (isIn) {
+                            if (casinoPlayers.length > 2) setCasinoPlayers(prev => prev.filter(x => x !== i));
+                          } else {
+                            setCasinoPlayers(prev => [...prev, i].sort((a, b) => a - b));
+                          }
+                        }} style={{ padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: "700",
+                          border: `1px solid ${isIn ? col : "var(--border)"}`,
+                          background: isIn ? col + "33" : "transparent",
+                          color: isIn ? col : "var(--muted)",
+                          fontFamily: "'DM Sans', sans-serif" }}>
+                          {names[i] || `P${i+1}`}
+                          {isIn && <span style={{ marginLeft: 4, fontSize: 11 }}>✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {casinoPlayers.length < 2 && (
+                    <div style={{ fontSize: 11, color: "#f87171", marginTop: 6, fontFamily: "'DM Sans', sans-serif" }}>Select at least 2 players</div>
+                  )}
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: games.casino ? 10 : 0, opacity: canCasino ? 1 : 0.35 }}>
+                <button onClick={() => { if (!canCasino) return; setGames(g => ({ ...g, casino: !g.casino })); }}
+                  style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, cursor: canCasino ? "pointer" : "not-allowed",
+                    border: `1px solid ${games.casino && canCasino ? "var(--accent)" : "var(--border)"}`,
+                    background: games.casino && canCasino ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                    color: games.casino && canCasino ? "#fff" : "var(--text)",
+                    fontSize: 16, fontWeight: "700" }}>
+                  {games.casino && canCasino ? "✓" : "—"}
+                </button>
+                <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
+                  Casino
+                  {!canCasino && <span style={{ fontSize: 10, color: "var(--dim)", marginLeft: 6 }}>2+ players</span>}
+                </span>
+                <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", opacity: games.casino && canCasino ? 1 : 0.4, pointerEvents: games.casino && canCasino ? "auto" : "none" }}>
+                  <button className="pm-btn" onClick={() => setCasinoVal(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
+                  <span style={{ width: 42, textAlign: "center", color: "var(--accent)", fontSize: 16, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>${casinoVal}</span>
+                  <button className="pm-btn" onClick={() => setCasinoVal(v => v + 1)} style={S.pmBtnInline}>+</button>
+                </div>
+              </div>
+              {games.casino && canCasino && (
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>Gross birdie</div>
+                    <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                      <button className="pm-btn" onClick={() => setCasinoBirdieMult(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
+                      <span style={{ flex: 1, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{casinoBirdieMult}</span>
+                      <button className="pm-btn" onClick={() => setCasinoBirdieMult(v => v + 1)} style={S.pmBtnInline}>+</button>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>Gross eagle+</div>
+                    <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                      <button className="pm-btn" onClick={() => setCasinoEagleMult(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
+                      <span style={{ flex: 1, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{casinoEagleMult}</span>
+                      <button className="pm-btn" onClick={() => setCasinoEagleMult(v => v + 1)} style={S.pmBtnInline}>+</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
             {/* ── 3-ball Vegas variant config ── */}
+
             {playerCount === 3 && games.vegas && (
               <div style={{ marginBottom: 14, padding: 10, background: "var(--card)", borderRadius: 8, border: "1px solid var(--border2)" }}>
                 <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>3-BALL VEGAS VARIANT</div>
@@ -3092,8 +3222,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                       const cfg = round.config;
                       const ss = cfg._savedState;
                       if (!ss) return null;
-                      const _NP=ss.liveHcps.length;const vCum=Array(_NP).fill(0),cCum=Array(_NP).fill(0),pCum=Array(_NP).fill(0);
+                      const _NP=ss.liveHcps.length;const vCum=Array(_NP).fill(0),cCum=Array(_NP).fill(0),pCum=Array(_NP).fill(0),casCum=Array(_NP).fill(0);
                       const _vp=cfg.vegasPlayers||[0,1,2,3];
+                      const _cp=(cfg.casinoPlayers||Array.from({length:_NP},(_,i)=>i)).filter(p=>p<_NP);
                       cfg.holes.forEach((h,hi) => {
                         if (!ss.inPlay[hi]) return;
                         const g=ss.gross[hi];
@@ -3101,8 +3232,9 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                         if(cfg.games.vegas){const vr=computeVegas(ss.vTeams[hi],g,n,h.par);if(vr){ss.vTeams[hi][0].forEach(p=>{vCum[p]+=vr.netA;});ss.vTeams[hi][1].forEach(p=>{vCum[p]+=vr.netB;});}}
                         if(cfg.games.ct){const vpN=_vp.map(p=>n[p]);const ct=computeCutThroat(vpN);_vp.forEach((p,idx)=>cCum[p]+=ct[idx]);}
                         if(cfg.games.p3&&h.par===3){const vpN=_vp.map(p=>n[p]);const vpBi=_vp.indexOf(ss.banker[hi])>=0?_vp.indexOf(ss.banker[hi]):0;const vpM=_vp.map(p=>ss.p3mult[hi]?.[p]||1);const p3=computePar3(vpN,vpBi,vpM);_vp.forEach((p,idx)=>pCum[p]+=p3[idx]);}
+                        if(cfg.games.casino&&_cp.length>=2){const cpN=_cp.map(p=>n[p]);const cpG=_cp.map(p=>g[p]);const cpM=_cp.map(p=>ss.casinoMult?.[hi]?.[p]||1);const cas=computeCasino(cpN,cpM,cpG,h.par,cfg.casinoBirdieMult??2,cfg.casinoEagleMult??4);_cp.forEach((p,idx)=>casCum[p]+=cas[idx]);}
                       });
-                      const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(ss.adjustments?.[pi]||0);
+                      const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(cfg.games.casino?casCum[pi]*(cfg.casinoVal??3):0)+(ss.adjustments?.[pi]||0);
                       // Nassau
                       let nassauD = 0;
                       if (cfg.nassau?.on && ss.matchups) {
@@ -3187,6 +3319,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               setTimeout(() => setStartError(""), 3000);
               return;
             }
+            if (games.casino && canCasino && casinoPlayers.filter(i => i < playerCount).length < 2) {
+              setStartError("Select at least 2 players for Casino");
+              setTimeout(() => setStartError(""), 3000);
+              return;
+            }
             setStartError("");
             // Gate: show confirmation dialog only for genuinely fresh starts
             // (no holes scored yet). When resuming a round in progress (any
@@ -3219,6 +3356,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
               p3: canP3 && games.p3,
               pts: canPts && games.pts,
               sixes: canSixes && games.sixes,
+              casino: canCasino && games.casino,
             },
             matchupBets,
             vegasRules,
@@ -4787,6 +4925,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   const [vegasVal, setVegasVal] = useState(config.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(config.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(config.p3Val ?? 5);
+  const [casinoVal] = useState(config.casinoVal ?? 3);
+  const casinoBirdieMult = config.casinoBirdieMult ?? 2;
+  const casinoEagleMult = config.casinoEagleMult ?? 4;
   const [ptsVal] = useState(config.ptsVal !== undefined ? config.ptsVal : 0);
   const [hcpThreshold, setHcpThreshold] = useState(config.hcpThreshold ?? 25);
   const saved = config._savedState;
@@ -4821,6 +4962,8 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   React.useEffect(() => { hzHeroRef.current = hzHero; }, [hzHero]);
   const vegasPlayers = config.vegasPlayers || [0,1,2,3];
   const vp = ghostEnabled ? [0,1,2,3] : (vegasPlayers || [0,1,2,3]).filter(i => i < N);
+  const casinoPlayersCfg = config.casinoPlayers ?? Array.from({ length: N }, (_, i) => i);
+  const cp = casinoPlayersCfg.filter(i => i < N);
   const [gross, setGross] = useState(() => {
     const savedGross = savedScores?.gross || saved?.gross;
     if (savedGross) {
@@ -4867,6 +5010,17 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     }
     return Array.from({length:18}, () => Array(N).fill(1));
   });
+  const [casinoMult, setCasinoMult] = useState(() => {
+    const savedC = savedScores?.casinoMult || saved?.casinoMult;
+    if (savedC) {
+      return Array.from({ length: 18 }, (_, hi) => {
+        const row = savedC[hi] ? [...savedC[hi]] : [];
+        while (row.length < N) row.push(1);
+        return row;
+      });
+    }
+    return Array.from({ length: 18 }, () => Array(N).fill(1));
+  });
   const [holeIdx, setHoleIdx] = useState(() => {
     // Resume: jump to last hole user was on (avoids unnecessary NEXT taps that
     // each fire a hole-transition log).
@@ -4910,6 +5064,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   const vTeamsRef = React.useRef(vTeams);
   const bankerRef = React.useRef(banker);
   const p3multRef = React.useRef(p3mult);
+  const casinoMultRef = React.useRef(casinoMult);
   const matchupsRef = React.useRef(matchups);
   const liveHcpsRef = React.useRef(liveHcps);
   const adjustmentsRef = React.useRef(adjustments);
@@ -4964,6 +5119,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         vTeams: vTeamsRef.current,
         banker: bankerRef.current,
         p3mult: p3multRef.current,
+        casinoMult: casinoMultRef.current,
         holeIdx: holeIdxRef.current,
         inPlay,
         liveHcps: liveHcpsRef.current,
@@ -5003,10 +5159,14 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   function toggleMult(hi, pi) {
     setP3mult(prev => { const n=JSON.parse(JSON.stringify(prev)); n[hi][pi]=n[hi][pi]===1?2:n[hi][pi]===2?3:1; return n; });
   }
+  function toggleCasinoMult(hi, pi) {
+    setCasinoMult(prev => { const n = JSON.parse(JSON.stringify(prev)); n[hi][pi] = n[hi][pi] === 1 ? 2 : n[hi][pi] === 2 ? 3 : 1; return n; });
+  }
   // Keep refs in sync with state
   React.useEffect(() => { vTeamsRef.current = vTeams; }, [vTeams]);
   React.useEffect(() => { bankerRef.current = banker; }, [banker]);
   React.useEffect(() => { p3multRef.current = p3mult; }, [p3mult]);
+  React.useEffect(() => { casinoMultRef.current = casinoMult; }, [casinoMult]);
   React.useEffect(() => { matchupsRef.current = matchups; }, [matchups]);
   React.useEffect(() => { liveHcpsRef.current = liveHcps; }, [liveHcps]);
   React.useEffect(() => { adjustmentsRef.current = adjustments; }, [adjustments]);
@@ -5147,13 +5307,21 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       const vpP3 = computePar3(vpNett, vpBankerIdx, vpMults);
       vp.forEach((pi, idx) => { p3[pi] = vpP3[idx]; });
     }
+    const casino = Array(N).fill(0);
+    if (games.casino && cp.length >= 2) {
+      const cpNett = cp.map(pi => n[pi]);
+      const cpGross = cp.map(pi => g[pi]);
+      const cpMults = cp.map(pi => casinoMult[hi][pi]);
+      const vpCasino = computeCasino(cpNett, cpMults, cpGross, h.par, casinoBirdieMult, casinoEagleMult);
+      cp.forEach((pi, idx) => { casino[pi] = vpCasino[idx]; });
+    }
     const pts = games.pts ? computePointsGame(n) : Array(N).fill(0);
-    return { g, grossForVegas, teamsForVegas, n, nVP, vr, vd, ct, p3, pts, isHIO };
+    return { g, grossForVegas, teamsForVegas, n, nVP, vr, vd, ct, p3, casino, pts, isHIO };
   });
-  const vegasCum=Array(N).fill(0), ctCum=Array(N).fill(0), p3Cum=Array(N).fill(0), ptsCum=Array(N).fill(0);
+  const vegasCum=Array(N).fill(0), ctCum=Array(N).fill(0), p3Cum=Array(N).fill(0), casinoCum=Array(N).fill(0), ptsCum=Array(N).fill(0);
   results.forEach((r, hi) => {
     if (!inPlay[hi]) return;
-    players.forEach(pi => { vegasCum[pi]+=r.vd[pi]; ctCum[pi]+=r.ct[pi]; p3Cum[pi]+=r.p3[pi]; ptsCum[pi]+=r.pts[pi]; });
+    players.forEach(pi => { vegasCum[pi]+=r.vd[pi]; ctCum[pi]+=r.ct[pi]; p3Cum[pi]+=r.p3[pi]; casinoCum[pi]+=r.casino[pi]; ptsCum[pi]+=r.pts[pi]; });
   });
 
   // ── Sixes computation ──
@@ -5258,6 +5426,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     (games.vegas?vegasCum[pi]*vegasVal:0) +
     (games.ct?ctCum[pi]*ctVal:0) +
     (games.p3?p3Cum[pi]*p3Val:0) +
+    (games.casino?casinoCum[pi]*casinoVal:0) +
     adjustments[pi]);
   // 6-point is separate from Vegas/CT/Banker subtotal (like Nassau)
   // Nassau / GDB computation
@@ -5333,7 +5502,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         players: playersArr,
         games_enabled: games,
         game_settings: {
-          vegasVal, ctVal, p3Val, ptsVal,
+          vegasVal, ctVal, p3Val, casinoVal, casinoBirdieMult, casinoEagleMult, casinoPlayers: cp, ptsVal,
           vegasRules: config.vegasRules,
           hcpCap: config.hcpCap,
           hcpThreshold: config.hcpThreshold,
@@ -5351,12 +5520,14 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         v_teams: vTeams,
         banker,
         p3mult,
+        casino_mult: games.casino ? casinoMult : null,
         hz_hero: hzEnabled ? hzHero : null,
         ghost_gross: ghostEnabled ? ghostGross : null,
         final_dollars: dollarsTotal,
         vegas_cum: vegasCum,
         ct_cum: ctCum,
         p3_cum: p3Cum,
+        casino_cum: casinoCum,
         pts_cum: ptsCum,
         sixes_dollars: sixesEnabled ? sixesPlayerDollars : null,
         sixes_tokens: sixesEnabled ? sixesPlayerTokens : null,
@@ -5368,7 +5539,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         round_signature,
       },
     };
-  }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, holes, vegasVal, ctVal, p3Val, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments, dollarsTotal, dollars, vegasCum, ctCum, p3Cum, ptsCum]);
+  }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, casinoMult, cp, holes, vegasVal, ctVal, p3Val, casinoVal, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments, dollarsTotal, dollars, vegasCum, ctCum, p3Cum, casinoCum, ptsCum]);
   // Log helper — writes to both tables
   // Skip-if-unchanged: track last-sent payload hash to avoid wasting Supabase
   // sequence numbers + bandwidth on identical payloads (e.g. toggle-off-toggle-on
@@ -5597,7 +5768,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   const firstNine = frontPlayed >= backPlayed ? "F" : "B";
   const qrPayload = React.useMemo(() => buildQRPayload({
     names: liveNames, hcps: liveHcps, holes, scores: gross, inPlay,
-    games, stakes: { vegasVal, ctVal, p3Val },
+    games, stakes: { vegasVal, ctVal, p3Val, casinoVal },
     vTeams, dollars: dollarsTotal,
     matchups, nassauResults: matchupResults, matchupEnabled,
     courseName: config.courseName, firstNine,
@@ -5833,7 +6004,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                 {label}
               </button>
             ))}
-            <button className="tab-btn" onClick={() => { window.scrollTo(0,0); onBack({ gross, vTeams, banker, p3mult, inPlay, liveHcps, liveNames, adjustments, matchups, holeIdx, ghostGross, hzHero }, roundId); }}
+            <button className="tab-btn" onClick={() => { window.scrollTo(0,0); onBack({ gross, vTeams, banker, p3mult, casinoMult, inPlay, liveHcps, liveNames, adjustments, matchups, holeIdx, ghostGross, hzHero }, roundId); }}
               style={{ padding: "6px 10px", borderRadius: 6, fontSize: 16, cursor: "pointer", transition: "all 0.15s", border: "1px solid var(--border)", background: "transparent", color: "var(--dim)" }}>
               🏠
             </button>
@@ -6350,6 +6521,54 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
               </Sect>
               </div>
             )}
+            {/* Casino */}
+            {games.casino && cp.length >= 2 && (
+              <div style={{ opacity: inPlay[holeIdx] ? 1 : 0.4, pointerEvents: inPlay[holeIdx] ? "auto" : "none" }}>
+              <Sect title="Casino">
+                <div>
+                  <div style={{ fontSize: 14, color: "var(--text)", fontWeight: "600", marginBottom: 8 }}>Multipliers (tap 1→2→3)</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {cp.map(pi => {
+                      const eff = (casinoMult[holeIdx][pi] || 1) * casinoGrossBonus(gross[holeIdx][pi], h.par, casinoBirdieMult, casinoEagleMult);
+                      return (
+                      <button key={pi} style={{ flex: cp.length <= 4 ? 1 : undefined, minWidth: cp.length > 4 ? 72 : undefined, padding: "16px 8px", borderRadius: 8, cursor: "pointer",
+                        border: `1px solid ${casinoMult[holeIdx][pi]>1 || eff>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi]) : "var(--border)"}`,
+                        background: casinoMult[holeIdx][pi]>1 || eff>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi])+"22" : "transparent",
+                        fontFamily: "'DM Sans', sans-serif" }}
+                        onClick={() => toggleCasinoMult(holeIdx, pi)}>
+                        <div style={{ fontSize: 16, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "800" }}>{liveNames[pi]}</div>
+                        <div style={{ fontSize: 28, fontWeight: "700", color: eff>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi]) : "var(--dim)", lineHeight: 1, fontFamily: "'Bebas Neue', sans-serif" }}>×{eff}</div>
+                        {eff !== (casinoMult[holeIdx][pi] || 1) && (
+                          <div style={{ fontSize: 9, color: "var(--dim)", marginTop: 2 }}>call ×{casinoMult[holeIdx][pi]}</div>
+                        )}
+                      </button>
+                      );
+                    })}
+                  </div>
+                  <div style={{ marginTop: 10, background: "var(--input)", borderRadius: 8, padding: "8px 10px", border: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 2, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>STAKES PER MATCHUP</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflowY: "auto" }}>
+                      {cp.flatMap((pi, ii) => cp.slice(ii + 1).map(pj => {
+                        const effI = (casinoMult[holeIdx][pi] || 1) * casinoGrossBonus(gross[holeIdx][pi], h.par, casinoBirdieMult, casinoEagleMult);
+                        const effJ = (casinoMult[holeIdx][pj] || 1) * casinoGrossBonus(gross[holeIdx][pj], h.par, casinoBirdieMult, casinoEagleMult);
+                        const effective = effI * effJ;
+                        return (
+                          <div key={`${pi}-${pj}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 14, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>
+                              <span style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi] }}>{liveNames[pi]}</span>
+                              {" vs "}
+                              <span style={{ color: isLight?COLORS_LIGHT[pj]:COLORS[pj] }}>{liveNames[pj]}</span>
+                            </span>
+                            <span style={{ fontSize: 16, fontWeight: "700", color: effective > 1 ? "#e879f9" : "var(--dim)", fontFamily: "'Bebas Neue', sans-serif" }}>×{effective}</span>
+                          </div>
+                        );
+                      }))}
+                    </div>
+                  </div>
+                </div>
+              </Sect>
+              </div>
+            )}
             {/* Nassau inline status */}
             {matchupEnabled && (
               <div style={{ marginBottom: 20 }}>
@@ -6585,6 +6804,26 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             </Sect>
             )}
 
+            {N > 1 && games.casino && cp.length >= 2 && (
+            <Sect title={`Hole ${holeIdx+1} — Casino`}>
+              <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
+                <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${cp.length}, 1fr)`, borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ padding: "8px 10px" }} />
+                  {cp.map(pi => (
+                    <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</div>
+                  ))}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${cp.length}, 1fr)` }}>
+                  <div style={{ padding: "8px 10px", fontSize: 15, fontWeight: "600", color: "var(--text)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Casino</div>
+                  {cp.map(pi => {
+                    const v = inPlay[holeIdx] ? res.casino[pi] : 0;
+                    return <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
+                  })}
+                </div>
+              </div>
+            </Sect>
+            )}
+
             {/* Points Game standalone section */}
             {N > 1 && games.pts && (
             <Sect title={`Hole ${holeIdx+1} Points`}>
@@ -6709,12 +6948,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           </>
         ) : (
           <TotalsView names={liveNames} results={results} holes={holes} vTeams={vTeams}
-            vegasCum={vegasCum} ctCum={ctCum} p3Cum={p3Cum} ptsCum={ptsCum}
+            vegasCum={vegasCum} ctCum={ctCum} p3Cum={p3Cum} casinoCum={casinoCum} ptsCum={ptsCum}
             dollars={dollarsTotal} dollarsSubtotal={dollars} playerCount={N}
-            vegasVal={vegasVal} ctVal={ctVal} p3Val={p3Val} ptsVal={ptsVal} inPlay={inPlay}
+            vegasVal={vegasVal} ctVal={ctVal} p3Val={p3Val} casinoVal={casinoVal} ptsVal={ptsVal} inPlay={inPlay}
             adjustments={adjustments} setAdjustments={setAdjustments}
             liveHcps={liveHcps} hcpThreshold={hcpThreshold} games={games}
             vegasPlayers={ghostEnabled ? vp.filter(i => i !== GHOST_IDX) : vp}
+            casinoPlayers={cp}
             matchupEnabled={matchupEnabled} nassauResults={matchupResults} matchups={matchups}
             sixesEnabled={sixesEnabled} sixesData={sixesData} sixesConfig={sixesConfig}
             sixesPlayerDollars={sixesPlayerDollars} sixesPlayerTokens={sixesPlayerTokens}
@@ -6725,7 +6965,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             onSave={() => {
               const roundData = {
                 roundId,
-                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
+                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, casinoMult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
                 date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                 courseName: config.courseName || "Round",
                 savedAt: Date.now(),
@@ -6739,14 +6979,14 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             onExport={() => {
               const roundData = {
                 roundId,
-                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
+                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, casinoMult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
                 date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                 courseName: config.courseName || "Round",
                 savedAt: Date.now(),
               };
               exportRound(roundData);
             }}
-            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, ptsCum, vegasVal, ctVal, p3Val, ptsVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vegasPlayers: vp, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
+            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, casinoCum, ptsCum, vegasVal, ctVal, p3Val, casinoVal, ptsVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vegasPlayers: vp, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
             onHole={hi => { if (!inPlay[hi]) window.scrollTo(0,0); setHoleIdx(hi); setView("hole"); }}
             isLight={isLight} />
         )}
@@ -6794,9 +7034,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
 }
 
 // TOTALS VIEW
-function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, ptsCum, dollars, dollarsSubtotal, playerCount, vegasVal, ctVal, p3Val, ptsVal, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, vegasPlayers, onSave, onExport, onReport, saveMsg, onHole, isLight, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, qrPayload, hzEnabled, ghostEnabled, roundId }) {
+function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, casinoCum, ptsCum, dollars, dollarsSubtotal, playerCount, vegasVal, ctVal, p3Val, casinoVal, ptsVal, inPlay, adjustments, setAdjustments, liveHcps, hcpThreshold, games, vegasPlayers, casinoPlayers, onSave, onExport, onReport, saveMsg, onHole, isLight, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, qrPayload, hzEnabled, ghostEnabled, roundId }) {
   const isSolo = playerCount === 1;
   const vp = vegasPlayers || [0,1,2,3];
+  const cp = (casinoPlayers && casinoPlayers.length >= 2 ? casinoPlayers : names.map((_, i) => i)).filter(i => i < names.length);
   const [tab, setTab] = useState("board");
   const [showHcp, setShowHcp] = useState(false);
   const [showAdj, setShowAdj] = useState(false);
@@ -6858,7 +7099,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
       </div>
       {saveMsg && <div style={{ textAlign: "center", fontSize: 12, color: "var(--accent)", marginBottom: 10, fontFamily: "'DM Sans', sans-serif" }}>{saveMsg}</div>}
       <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CT"],["par3","BANKER"],["pts","PTS"],["sixes","SIXES"],["nassau","MATCH"]].filter(([t]) => t==="board" || (!isSolo && ((t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="par3"&&games.p3) || (t==="pts"&&games.pts) || (t==="sixes"&&sixesEnabled) || (t==="nassau"&&matchupEnabled)))).map(([t,label]) => (
+        {[["board","TOTALS"],["vegas","VEGAS"],["ct","CT"],["casino","CASINO"],["par3","BANKER"],["pts","PTS"],["sixes","SIXES"],["nassau","MATCH"]].filter(([t]) => t==="board" || (!isSolo && ((t==="vegas"&&games.vegas) || (t==="ct"&&games.ct) || (t==="casino"&&games.casino) || (t==="par3"&&games.p3) || (t==="pts"&&games.pts) || (t==="sixes"&&sixesEnabled) || (t==="nassau"&&matchupEnabled)))).map(([t,label]) => (
           <button key={t} className="tab-btn" onClick={() => setTab(t)}
             style={{ padding: "8px 12px", borderRadius: 6, fontSize: 11, letterSpacing: 1, cursor: "pointer",
               border: `1px solid ${tab===t?COLORS[0]:"var(--border)"}`,
@@ -6895,7 +7136,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                   </div>
                 );
               })()}
-              {[[`Vegas${hzEnabled?" H":ghostEnabled?" G":""}`,"vegas",vegasCum,vegasVal],["CT","ct",ctCum,ctVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
+              {[[`Vegas${hzEnabled?" H":ghostEnabled?" G":""}`,"vegas",vegasCum,vegasVal],["CT","ct",ctCum,ctVal],["Casino","casino",casinoCum,casinoVal],["Banker","p3",p3Cum,p3Val]].filter(([,key])=>games[key]).map(([label,,cum,val]) => (
                 <div key={label} style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
                   <div style={{ padding: "5px 4px", fontSize: 13, color: "var(--text)", fontWeight: "600", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif", overflow: "hidden", whiteSpace: "nowrap" }}>{label}</div>
                   {RP.map(i => {
@@ -6914,7 +7155,7 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
                 </div>
               )}
               {/* Subtotal — only when Vegas/CT/Banker active */}
-              {(games.vegas || games.ct || games.p3) && (
+              {(games.vegas || games.ct || games.p3 || games.casino) && (
               <div style={{ display: "grid", gridTemplateColumns: `56px repeat(${RP.length},1fr)`, background: "var(--card)", borderBottom: (matchupEnabled||games.pts||sixesEnabled) ? "2px solid var(--border2)" : "none" }}>
                 <div style={{ padding: "5px 6px", fontSize: 13, color: "var(--text)", fontWeight: "700", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>
                   {(matchupEnabled||games.pts||sixesEnabled) ? "Sub" : "TOTAL"}
@@ -7183,6 +7424,32 @@ function TotalsView({ names, results, holes, vTeams, vegasCum, ctCum, p3Cum, pts
               <div style={{ ...S.td, fontWeight: "700", fontSize: 11 }}>TOT</div>
               <div style={S.td} />
               {vp.map(i => { const v=ctCum[i]; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: "700" }}>{v>0?"+":""}{v||"—"}</div>; })}
+            </div>
+          </div>
+        </Sect>
+      )}
+      {tab === "casino" && (
+        <Sect title="Casino — Hole by Hole">
+          <div style={{ background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)", overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: `28px 28px repeat(${cp.length},1fr)`, borderBottom: "1px solid var(--border)" }}>
+              {["H","Par",...cp.map(i=>(names[i]||`P${i+1}`).slice(0,5))].map((h,i) => (
+                <div key={i} style={{ ...S.th, padding: "8px 4px", fontSize: i>1?14:11, fontWeight: i>1?"700":"500", color: i>1?(isLight?COLORS_LIGHT[cp[i-2]]:COLORS[cp[i-2]]):"var(--muted)" }}>{h}</div>
+              ))}
+            </div>
+            {results.map((r, hi) => {
+              const active = inPlay[hi];
+              return (
+                <div key={hi} onClick={() => onHole(hi)} style={{ display: "grid", gridTemplateColumns: `28px 28px repeat(${cp.length},1fr)`, borderBottom: "1px solid var(--border)", cursor: "pointer", opacity: active?1:0.35 }}>
+                  <div style={S.td}>{hi+1}</div>
+                  <div style={{ ...S.td, fontSize: 11 }}>{holes[hi].par}</div>
+                  {cp.map(i => { const v=active?r.casino[i]:0; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: v!==0?"600":"400" }}>{v!==0?(v>0?"+":"")+v:"—"}</div>; })}
+                </div>
+              );
+            })}
+            <div style={{ display: "grid", gridTemplateColumns: `28px 28px repeat(${cp.length},1fr)`, background: "var(--card)", borderTop: "1px solid var(--border)" }}>
+              <div style={{ ...S.td, fontWeight: "700", fontSize: 11 }}>TOT</div>
+              <div style={S.td} />
+              {cp.map(i => { const v=casinoCum[i]; return <div key={i} style={{ ...S.td, color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"#4a7a4a", fontWeight: "700" }}>{v>0?"+":""}{v||"—"}</div>; })}
             </div>
           </div>
         </Sect>
