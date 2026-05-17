@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.24";
+const APP_VERSION = "vw-1.2.26";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -835,7 +835,11 @@ function makeFilename(names) {
 function roundDateLabel(round) {
   const rid = round?.config?._roundId || round?.roundId;
   if (rid) {
-    return new Date(rid).toLocaleDateString("en-SG", {
+    // _roundId is Date.now() (a number) in localStorage, but arrives as a
+    // numeric string when imported from Sankaku's JSON export. new Date()
+    // doesn't coerce numeric strings, so cast explicitly before parsing.
+    const ts = /^\d+$/.test(String(rid)) ? Number(rid) : rid;
+    return new Date(ts).toLocaleDateString("en-SG", {
       day: "numeric", month: "short", year: "numeric",
       timeZone: "Asia/Singapore",
     });
@@ -5522,6 +5526,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         device_id: getDeviceId(),
       },
       logFull: {
+        // ── Round identity + raw scores — top-level, indexed, queried by Sankaku/Dohyo ──
         round_id: rid,
         logged_at_sgt: sgt,
         device_id: getDeviceId(),
@@ -5544,32 +5549,40 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
           capPar3: config.capPar3 ?? 3,
           capOther: config.capOther ?? 4,
         },
-        three_ball_variant: ghostEnabled ? "ghost" : hzEnabled ? "hz" : null,
-        hz_bonus: hzEnabled ? !!config.hzBonus : null,
-        sixes_config: sixesEnabled ? sixesConfig : null,
-        matchups: matchupEnabled ? matchups : null,
         gross,
         in_play: inPlay,
-        v_teams: vTeams,
-        banker,
-        p3mult,
-        casino_mult: games.casino ? casinoMult : null,
-        hz_hero: hzEnabled ? hzHero : null,
-        ghost_gross: ghostEnabled ? ghostGross : null,
-        final_dollars: dollarsTotal,
-        vegas_cum: vegasCum,
-        ct_cum: ctCum,
-        p3_cum: p3Cum,
-        casino_cum: casinoCum,
-        pts_cum: ptsCum,
-        sixes_dollars: sixesEnabled ? sixesPlayerDollars : null,
-        sixes_tokens: sixesEnabled ? sixesPlayerTokens : null,
-        matchup_results: matchupEnabled ? matchupResults : null,
-        adjustments,
         course_par: holes.reduce((s, h) => s + h.par, 0),
         total_holes_played: inPlay.filter(Boolean).length,
         is_complete: inPlay.every(Boolean),
         round_signature,
+
+        // ── game_data — all game-specific results, per-hole arrays, variant config ──
+        // Add new games here. No ALTER TABLE ever again.
+        game_data: {
+          // variant config
+          three_ball_variant: ghostEnabled ? "ghost" : hzEnabled ? "hz" : null,
+          hz_bonus: hzEnabled ? !!config.hzBonus : null,
+          sixes_config: sixesEnabled ? sixesConfig : null,
+          matchups: matchupEnabled ? matchups : null,
+          // per-hole game arrays
+          v_teams: vTeams,
+          banker,
+          p3mult,
+          casino_mult: games.casino ? casinoMult : null,
+          hz_hero: hzEnabled ? hzHero : null,
+          ghost_gross: ghostEnabled ? ghostGross : null,
+          // cumulative results
+          final_dollars: dollarsTotal,
+          vegas_cum: vegasCum,
+          ct_cum: ctCum,
+          p3_cum: p3Cum,
+          casino_cum: casinoCum,
+          pts_cum: ptsCum,
+          sixes_dollars: sixesEnabled ? sixesPlayerDollars : null,
+          sixes_tokens: sixesEnabled ? sixesPlayerTokens : null,
+          matchup_results: matchupEnabled ? matchupResults : null,
+          adjustments,
+        },
       },
     };
   }, [roundId, config, games, liveNames, liveHcps, N, inPlay, gross, vTeams, banker, p3mult, casinoMult, cp, holes, vegasVal, ctVal, p3Val, casinoVal, ptsVal, ghostEnabled, hzEnabled, hzHero, ghostGross, sixesEnabled, sixesConfig, matchupEnabled, matchups, sixesPlayerDollars, sixesPlayerTokens, matchupResults, adjustments, dollarsTotal, dollars, vegasCum, ctCum, p3Cum, casinoCum, ptsCum]);
