@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.30";
+const APP_VERSION = "vw-1.2.31";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1539,9 +1539,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
     async function fetchLib() {
       const codes = ["DEFAULT"];
       if (groupCode.length === 4 && groupCode !== SUPERUSER_DEFAULT_CODE) codes.push(groupCode);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
       try {
         const url = `${SUPA_URL_BASE}/course_library?group_code=in.(${codes.join(",")})&source=in.(preloaded,user_added)&verified=eq.true&order=name.asc,tee.asc`;
-        const res = await fetch(url, { headers: { apikey: SUPA_KEY, Authorization: "Bearer " + SUPA_KEY } });
+        const res = await fetch(url, { headers: { apikey: SUPA_KEY, Authorization: "Bearer " + SUPA_KEY }, signal: controller.signal });
+        clearTimeout(timer);
         if (!res.ok) throw new Error("fetch failed");
         const arr = await res.json();
         // Deduplicate: prefer group-specific entry over DEFAULT for same name+tee
@@ -1555,6 +1558,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           try { localStorage.setItem("sws_library_cache", JSON.stringify(deduped)); } catch(_) {}
         }
       } catch(_) {
+        clearTimeout(timer);
         if (!cancelled) setLibraryOffline(true);
       }
     }
@@ -1589,6 +1593,16 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       }
     } catch(_) {}
     return PRESET_COURSES[0];
+  });
+  // Numeric PK from course_library for the currently-loaded course.
+  // Set when user selects a library course; null for PRESET_COURSES / localStorage courses.
+  // Written to rounds_full.course_library_id via buildFullPayload (Phase 3).
+  const [loadedCourseLibraryId, setLoadedCourseLibraryId] = useState(() => {
+    try {
+      const saved = localStorage.getItem("sws_lastcourse");
+      if (saved) { const c = JSON.parse(saved); return c.libraryId || null; }
+    } catch(_) {}
+    return null;
   });
   const [games, setGames] = useState(sc?.games || { vegas: true, ct: true, p3: true, pts: false, sixes: false, casino: false });
   const [vegasPlayers, setVegasPlayers] = useState(() => sc?.vegasPlayers || [0,1,2,3]);
@@ -1738,9 +1752,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   function loadCourse(course) {
     setHoles(course.holes.map(h => ({ ...h })));
     setLoadedCourse(course); setShowLib(false);
+    // Library courses carry a .source field (preloaded/user_added); PRESET/localStorage ones don't.
+    const libId = course.source ? course.id : null;
+    setLoadedCourseLibraryId(libId);
     setStorageMsg(`Loaded "${course.name} / ${course.tee}"`);
     setTimeout(() => setStorageMsg(""), 2500);
-    try { localStorage.setItem("sws_lastcourse", JSON.stringify({ id: course.id, name: course.name, tee: course.tee, holes: course.holes })); } catch(_) {}
+    try { localStorage.setItem("sws_lastcourse", JSON.stringify({ id: course.id, name: course.name, tee: course.tee, holes: course.holes, libraryId: libId })); } catch(_) {}
   }
   function handleImport(e) {
     const file = e.target.files[0];
@@ -1838,6 +1855,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       sixesConfig,
       ptsVal,
       groupCode,
+      courseLibraryId: loadedCourseLibraryId,
       courseName: loadedCourse ? `${loadedCourse.name}${loadedCourse.tee && loadedCourse.tee !== "—" ? " — " + loadedCourse.tee : ""}` : "Custom Course",
       _savedScores: savedScores || null,
       // Only inherit _roundId from savedConfig (true resume of in-progress
@@ -5613,6 +5631,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         total_holes_played: inPlay.filter(Boolean).length,
         is_complete: inPlay.every(Boolean),
         round_signature,
+        course_library_id: config.courseLibraryId || null,
 
         // ── game_data — all game-specific results, per-hole arrays, variant config ──
         // Add new games here. No ALTER TABLE ever again.
