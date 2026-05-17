@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.33";
+const APP_VERSION = "vw-1.2.34";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1818,11 +1818,15 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
           setSaveError("Invalid course file."); setTimeout(() => setSaveError(""), 3000); return;
         }
         const entry = { id: Date.now(), name: data.name || "Imported", tee: data.tee || "—", note: data.note || "", holes: data.holes };
-        // Check for duplicate name + tee in saved courses and presets
-        const allCourses = [...PRESET_COURSES, ...courses];
+        // Check for duplicate name + tee across presets, saved courses, AND library
+        const allCourses = [...PRESET_COURSES, ...courses, ...libraryCourses];
         const dup = allCourses.find(c => c.name.toLowerCase() === entry.name.toLowerCase() && c.tee.toLowerCase() === entry.tee.toLowerCase());
         if (dup) {
-          setSaveError(`"${entry.name} / ${entry.tee}" already exists in your library. Rename the tee box to save as a new entry.`);
+          const inLibrary = libraryCourses.some(c => c.name.toLowerCase() === entry.name.toLowerCase() && c.tee.toLowerCase() === entry.tee.toLowerCase());
+          setSaveError(inLibrary
+            ? `"${entry.name} / ${entry.tee}" is already in your library — select it from the LIBRARY section instead.`
+            : `"${entry.name} / ${entry.tee}" already exists in your library. Rename the tee box to save as a new entry.`
+          );
           setTimeout(() => setSaveError(""), 4000);
           return;
         }
