@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.20";
+const APP_VERSION = "vw-1.2.23";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -460,22 +460,30 @@ function casinoGrossBonus(gross, par, birdieMult, eagleMult) {
   return 1;
 }
 
-// Casino — all-pairs cut throat; stake per pair = effectiveMult[i] × effectiveMult[j]
-// effectiveMult[i] = calledMult[i] × grossBonus (birdie/eagle from gross score)
+// Casino — all-pairs cut throat
+// Base pair stake = calledMult[i] × calledMult[j]
+// Bonus rule: ONLY the winner's gross bonus (birdie/eagle) amplifies the stake.
+//   Loser's bonus never applies — birdieing while losing doesn't increase what you pay.
+//   Tie → no exchange (regardless of bonuses).
 function computeCasino(nett, calledMults, grossArr, par, birdieMult, eagleMult) {
   const N = nett.length;
   const d = Array(N).fill(0);
-  const effective = nett.map((_, i) => {
-    const called = Number(calledMults[i]) || 1;
-    const gb = casinoGrossBonus(grossArr[i], par, birdieMult, eagleMult);
-    return called * gb;
-  });
   for (let i = 0; i < N; i++) {
     for (let j = i + 1; j < N; j++) {
       if (nett[i] === null || nett[j] === null) continue;
-      const stake = effective[i] * effective[j];
-      if (nett[i] < nett[j]) { d[i] += stake; d[j] -= stake; }
-      else if (nett[j] < nett[i]) { d[j] += stake; d[i] -= stake; }
+      const calledI = Number(calledMults[i]) || 1;
+      const calledJ = Number(calledMults[j]) || 1;
+      const baseStake = calledI * calledJ;
+      if (nett[i] < nett[j]) {
+        const winnerBonus = casinoGrossBonus(grossArr[i], par, birdieMult, eagleMult);
+        const stake = baseStake * winnerBonus;
+        d[i] += stake; d[j] -= stake;
+      } else if (nett[j] < nett[i]) {
+        const winnerBonus = casinoGrossBonus(grossArr[j], par, birdieMult, eagleMult);
+        const stake = baseStake * winnerBonus;
+        d[j] += stake; d[i] -= stake;
+      }
+      // tie → no exchange
     }
   }
   return d;
@@ -860,7 +868,7 @@ function haptic(style = "light") {
   } catch(_) {}
 }
 
-async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, casinoCum, ptsCum, vegasVal, ctVal, p3Val, casinoVal, ptsVal, adjustments, games, matchupEnabled, nassauResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName, roundStartTime, qrPayload, playerCount, vegasPlayers, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }) {
+async function generateReport({ names, holes, liveHcps, inPlay, results, dollars, dollarsSubtotal, vegasCum, ctCum, p3Cum, casinoCum, ptsCum, vegasVal, ctVal, p3Val, casinoVal, ptsVal, adjustments, games, matchupEnabled, nassauResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName, roundStartTime, qrPayload, playerCount, vegasPlayers, vTeams, banker, p3mult, casinoMult, casinoPlayers, hioRule, ghostEnabled, hzEnabled, hzHero }) {
   const isSolo = playerCount === 1;
   const RP = names.map((_,i) => i);
   // Generate QR data URL if qrcode-generator library is loaded
@@ -925,6 +933,9 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   const RN = names.length;
   const vp = vegasPlayers || [0,1,2,3];
   const P_COLORS = ["#16a34a","#2563eb","#c2410c","#9333ea","#b45309","#0e7490"];
+  // Whether the printed scorecard reserves a 3rd suffix row for Casino tags.
+  // Only allocated when casino is actually configured — keeps non-casino reports compact.
+  const showCasinoRow = !!(games.casino && casinoPlayers && casinoPlayers.length > 0);
   let scRows = "";
   let outTotals = Array(RN).fill(0), inTotals = Array(RN).fill(0), grandTotals = Array(RN).fill(0);
   let outPar = 0, inPar = 0;
@@ -947,6 +958,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
         grandTotals[pi] += g;
       }
       const inVP = vp.includes(pi);
+      const inCp = games.casino && casinoPlayers && casinoPlayers.includes(pi);
       const inTeam0 = team0.includes(pi);
       const inTeam1 = team1.includes(pi);
       const scoreHtml = isNaN(g) ? "-" : scoreBadgeHtml(g, h.par, active);
@@ -958,16 +970,25 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
         if (isBanker) bankerTag = `<span style="font-size:8px;color:#c2410c;font-weight:700">B${mult>1?`×${mult}`:""}</span>`;
         else bankerTag = `<span style="font-size:8px;color:#777;font-weight:500">${mult>1?`×${mult}`:"×1"}</span>`;
       }
+      // Casino tag — for Casino players, all holes (called mult only; bonuses live in app stakes table)
+      let casinoTag = "";
+      if (inCp && casinoMult && casinoMult[hi]) {
+        const cmult = casinoMult[hi][pi] || 1;
+        if (cmult > 1) casinoTag = `<span style="font-size:8px;color:#4f46e5;font-weight:700">×${cmult}</span>`;
+      }
       // Vegas team dot — only for VP players: filled = team 0, outline = team 1
       let vegasDot = "";
       if (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled) && inVP && !isHIO_rep) {
         if (inTeam0) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#333;vertical-align:middle"></span>`;
         else if (inTeam1) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1.5px solid #333;vertical-align:middle"></span>`;
       }
-      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || (games.p3 && h.par === 3);
+      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || (games.p3 && h.par === 3) || showCasinoRow;
+      // Stack: banker (par 3) → casino (all holes, when Casino on) → vegas dot. Each on its
+      // own row so banker and casino tags are both visible when both games run on a par-3.
       const suffix = hasSuffix
         ? `<span style="display:inline-block;width:16px;text-align:left;vertical-align:middle;margin-left:1px">
             <span style="display:block;text-align:left;height:10px;line-height:10px">${bankerTag}</span>
+            ${showCasinoRow ? `<span style="display:block;text-align:left;height:10px;line-height:10px">${casinoTag}</span>` : ""}
             <span style="display:block;text-align:left;height:7px;line-height:7px">${vegasDot}</span>
            </span>`
         : "";
@@ -977,7 +998,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     scRows += row;
     if (hi < 9) outPar += h.par; else inPar += h.par;
     if (hi === 8) {
-      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3;
+      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3 || showCasinoRow;
       scRows += `<tr style="background:#e8f5e8;font-weight:700">
         <td style="text-align:center">OUT</td>
         <td style="text-align:center">${outPar}</td>
@@ -986,7 +1007,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       </tr>`;
     }
   }
-  const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3;
+  const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3 || showCasinoRow;
   scRows += `<tr style="background:#e8f5e8;font-weight:700">
     <td style="text-align:center">IN</td>
     <td style="text-align:center">${inPar}</td>
@@ -1125,10 +1146,13 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     <span style="color:#c2410c;font-weight:700;margin-right:3px">B</span>= Banker &nbsp;
     <span style="color:#9333ea;font-weight:700;margin-right:3px">×2/×3</span>= Multiplier called
   </div>` : ""}
+  ${showCasinoRow ? `<div style="font-size:9px;color:#555;margin-bottom:4px">
+    <span style="color:#4f46e5;font-weight:700;margin-right:3px">×2/×3</span>= Casino mult called
+  </div>` : ""}
   <table class="scorecard">
     <tr>
       <th>H</th><th>Par</th><th>SI</th>
-      ${(function(){ const hasSuffix2 = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,8)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
+      ${(function(){ const hasSuffix2 = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3 || showCasinoRow; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,8)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
     </tr>
     ${scRows}
   </table>
@@ -1447,7 +1471,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [vegasVal, setVegasVal] = useState(sc?.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(sc?.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(sc?.p3Val ?? 5);
-  const [casinoVal, setCasinoVal] = useState(sc?.casinoVal ?? 3);
+  const [casinoVal, setCasinoVal] = useState(sc?.casinoVal ?? 2);
   const [casinoBirdieMult, setCasinoBirdieMult] = useState(sc?.casinoBirdieMult ?? 2);
   const [casinoEagleMult, setCasinoEagleMult] = useState(sc?.casinoEagleMult ?? 4);
   const [bankerNett, setBankerNett] = useState(sc?.bankerNett ?? true);
@@ -1818,7 +1842,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   if (cfg.games.p3&&h.par===3){const vpN=_vp.map(p=>n[p]);const vpBi=_vp.indexOf(ss.banker[hi])>=0?_vp.indexOf(ss.banker[hi]):0;const vpM=_vp.map(p=>ss.p3mult[hi]?.[p]||1);const p3=computePar3(vpN,vpBi,vpM);_vp.forEach((p,idx)=>pCum[p]+=p3[idx]);}
                   if (cfg.games.casino&&_cp.length>=2){const cpN=_cp.map(p=>n[p]);const cpG=_cp.map(p=>g[p]);const cpM=_cp.map(p=>ss.casinoMult?.[hi]?.[p]||1);const cas=computeCasino(cpN,cpM,cpG,h.par,cfg.casinoBirdieMult??2,cfg.casinoEagleMult??4);_cp.forEach((p,idx)=>casCum[p]+=cas[idx]);}
                 });
-                const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(cfg.games.casino?casCum[pi]*(cfg.casinoVal??3):0)+(ss.adjustments?.[pi]||0);
+                const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(cfg.games.casino?casCum[pi]*(cfg.casinoVal??2):0)+(ss.adjustments?.[pi]||0);
                 // Nassau
                 let nassauD = 0;
                 if (cfg.nassau?.on && ss.matchups) {
@@ -2497,79 +2521,6 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 </div>
               );
             })}
-            {/* ── Casino ── */}
-            <div style={{ marginTop: 4, marginBottom: 10, paddingTop: 10, borderTop: "1px solid var(--border2)" }}>
-              <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>CASINO</div>
-              {playerCount > 4 && games.casino && (
-                <div style={{ marginBottom: 14, padding: "10px 12px", background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                  <div style={{ fontSize: 12, color: "var(--text)", letterSpacing: 1, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>CASINO GROUP — PICK PLAYERS (MIN 2)</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {Array.from({ length: playerCount }, (_, i) => {
-                      const isIn = casinoPlayers.includes(i);
-                      const col = isLight ? COLORS_LIGHT[i] : COLORS[i];
-                      return (
-                        <button key={i} onClick={() => {
-                          if (isIn) {
-                            if (casinoPlayers.length > 2) setCasinoPlayers(prev => prev.filter(x => x !== i));
-                          } else {
-                            setCasinoPlayers(prev => [...prev, i].sort((a, b) => a - b));
-                          }
-                        }} style={{ padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: "700",
-                          border: `1px solid ${isIn ? col : "var(--border)"}`,
-                          background: isIn ? col + "33" : "transparent",
-                          color: isIn ? col : "var(--muted)",
-                          fontFamily: "'DM Sans', sans-serif" }}>
-                          {names[i] || `P${i+1}`}
-                          {isIn && <span style={{ marginLeft: 4, fontSize: 11 }}>✓</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {casinoPlayers.length < 2 && (
-                    <div style={{ fontSize: 11, color: "#f87171", marginTop: 6, fontFamily: "'DM Sans', sans-serif" }}>Select at least 2 players</div>
-                  )}
-                </div>
-              )}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: games.casino ? 10 : 0, opacity: canCasino ? 1 : 0.35 }}>
-                <button onClick={() => { if (!canCasino) return; setGames(g => ({ ...g, casino: !g.casino })); }}
-                  style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, cursor: canCasino ? "pointer" : "not-allowed",
-                    border: `1px solid ${games.casino && canCasino ? "var(--accent)" : "var(--border)"}`,
-                    background: games.casino && canCasino ? (isLight ? "#000" : "var(--accent)") : "transparent",
-                    color: games.casino && canCasino ? "#fff" : "var(--text)",
-                    fontSize: 16, fontWeight: "700" }}>
-                  {games.casino && canCasino ? "✓" : "—"}
-                </button>
-                <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
-                  Casino
-                  {!canCasino && <span style={{ fontSize: 10, color: "var(--dim)", marginLeft: 6 }}>2+ players</span>}
-                </span>
-                <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", opacity: games.casino && canCasino ? 1 : 0.4, pointerEvents: games.casino && canCasino ? "auto" : "none" }}>
-                  <button className="pm-btn" onClick={() => setCasinoVal(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
-                  <span style={{ width: 42, textAlign: "center", color: "var(--accent)", fontSize: 16, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>${casinoVal}</span>
-                  <button className="pm-btn" onClick={() => setCasinoVal(v => v + 1)} style={S.pmBtnInline}>+</button>
-                </div>
-              </div>
-              {games.casino && canCasino && (
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 4 }}>
-                  <div style={{ flex: 1, minWidth: 120 }}>
-                    <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>Gross birdie</div>
-                    <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-                      <button className="pm-btn" onClick={() => setCasinoBirdieMult(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
-                      <span style={{ flex: 1, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{casinoBirdieMult}</span>
-                      <button className="pm-btn" onClick={() => setCasinoBirdieMult(v => v + 1)} style={S.pmBtnInline}>+</button>
-                    </div>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 120 }}>
-                    <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>Gross eagle+</div>
-                    <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
-                      <button className="pm-btn" onClick={() => setCasinoEagleMult(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
-                      <span style={{ flex: 1, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{casinoEagleMult}</span>
-                      <button className="pm-btn" onClick={() => setCasinoEagleMult(v => v + 1)} style={S.pmBtnInline}>+</button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
             {/* ── 3-ball Vegas variant config ── */}
 
             {playerCount === 3 && games.vegas && (
@@ -2785,6 +2736,78 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   </table>
                   <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginTop: 6 }}>
                     Mult and bonus awarded to winning team only. Eagle bonus only applies if partner makes par or better.
+                  </div>
+                </div>
+              </div>
+            )}
+            {/* ── CASINO ── */}
+            <div style={{ borderTop: "2px solid var(--border)", marginBottom: 12 }} />
+            <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 2, fontWeight: "700", fontFamily: "'DM Sans', sans-serif", marginBottom: 8 }}>CASINO</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: games.casino && canCasino ? 10 : 0, opacity: canCasino ? 1 : 0.35 }}>
+              <button onClick={() => { if (!canCasino) return; setGames(g => ({ ...g, casino: !g.casino })); }}
+                style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0, cursor: canCasino ? "pointer" : "not-allowed",
+                  border: `1px solid ${games.casino && canCasino ? "var(--accent)" : "var(--border)"}`,
+                  background: games.casino && canCasino ? (isLight ? "#000" : "var(--accent)") : "transparent",
+                  color: games.casino && canCasino ? "#fff" : "var(--text)",
+                  fontSize: 16, fontWeight: "700" }}>
+                {games.casino && canCasino ? "✓" : "—"}
+              </button>
+              <span style={{ flex: 1, fontSize: 16, fontWeight: "600", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>
+                Casino
+                {!canCasino && <span style={{ fontSize: 10, color: "var(--dim)", marginLeft: 6 }}>2+ players</span>}
+              </span>
+              <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", opacity: games.casino && canCasino ? 1 : 0.4, pointerEvents: games.casino && canCasino ? "auto" : "none" }}>
+                <button className="pm-btn" onClick={() => setCasinoVal(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
+                <span style={{ width: 42, textAlign: "center", color: "var(--accent)", fontSize: 16, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>${casinoVal}</span>
+                <button className="pm-btn" onClick={() => setCasinoVal(v => v + 1)} style={S.pmBtnInline}>+</button>
+              </div>
+            </div>
+            {games.casino && canCasino && (
+              <div style={{ marginBottom: 10, padding: "10px 12px", background: "var(--input)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 12, color: "var(--text)", letterSpacing: 1, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>CASINO GROUP — PICK PLAYERS (MIN 2)</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {Array.from({ length: playerCount }, (_, i) => {
+                    const isIn = casinoPlayers.includes(i);
+                    const col = isLight ? COLORS_LIGHT[i] : COLORS[i];
+                    return (
+                      <button key={i} onClick={() => {
+                        if (isIn) {
+                          if (casinoPlayers.length > 2) setCasinoPlayers(prev => prev.filter(x => x !== i));
+                        } else {
+                          setCasinoPlayers(prev => [...prev, i].sort((a, b) => a - b));
+                        }
+                      }} style={{ padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: "700",
+                        border: `1px solid ${isIn ? col : "var(--border)"}`,
+                        background: isIn ? col + "33" : "transparent",
+                        color: isIn ? col : "var(--text)",
+                        fontFamily: "'DM Sans', sans-serif" }}>
+                        {names[i] || `P${i+1}`}
+                        {isIn && <span style={{ marginLeft: 4, fontSize: 11 }}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                {casinoPlayers.length < 2 && (
+                  <div style={{ fontSize: 11, color: "#f87171", marginTop: 6, fontFamily: "'DM Sans', sans-serif" }}>Select at least 2 players</div>
+                )}
+              </div>
+            )}
+            {games.casino && canCasino && (
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                <div style={{ flex: 1, minWidth: 120 }}>
+                  <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>Gross birdie</div>
+                  <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                    <button className="pm-btn" onClick={() => setCasinoBirdieMult(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
+                    <span style={{ flex: 1, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{casinoBirdieMult}</span>
+                    <button className="pm-btn" onClick={() => setCasinoBirdieMult(v => v + 1)} style={S.pmBtnInline}>+</button>
+                  </div>
+                </div>
+                <div style={{ flex: 1, minWidth: 120 }}>
+                  <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 4, fontFamily: "'DM Sans', sans-serif" }}>Gross eagle+</div>
+                  <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden" }}>
+                    <button className="pm-btn" onClick={() => setCasinoEagleMult(v => Math.max(1, v - 1))} style={S.pmBtnInline}>−</button>
+                    <span style={{ flex: 1, textAlign: "center", color: "var(--accent)", fontSize: 15, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>×{casinoEagleMult}</span>
+                    <button className="pm-btn" onClick={() => setCasinoEagleMult(v => v + 1)} style={S.pmBtnInline}>+</button>
                   </div>
                 </div>
               </div>
@@ -3234,7 +3257,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                         if(cfg.games.p3&&h.par===3){const vpN=_vp.map(p=>n[p]);const vpBi=_vp.indexOf(ss.banker[hi])>=0?_vp.indexOf(ss.banker[hi]):0;const vpM=_vp.map(p=>ss.p3mult[hi]?.[p]||1);const p3=computePar3(vpN,vpBi,vpM);_vp.forEach((p,idx)=>pCum[p]+=p3[idx]);}
                         if(cfg.games.casino&&_cp.length>=2){const cpN=_cp.map(p=>n[p]);const cpG=_cp.map(p=>g[p]);const cpM=_cp.map(p=>ss.casinoMult?.[hi]?.[p]||1);const cas=computeCasino(cpN,cpM,cpG,h.par,cfg.casinoBirdieMult??2,cfg.casinoEagleMult??4);_cp.forEach((p,idx)=>casCum[p]+=cas[idx]);}
                       });
-                      const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(cfg.games.casino?casCum[pi]*(cfg.casinoVal??3):0)+(ss.adjustments?.[pi]||0);
+                      const subtotal=(cfg.games.vegas?vCum[pi]*cfg.vegasVal:0)+(cfg.games.ct?cCum[pi]*cfg.ctVal:0)+(cfg.games.p3?pCum[pi]*cfg.p3Val:0)+(cfg.games.casino?casCum[pi]*(cfg.casinoVal??2):0)+(ss.adjustments?.[pi]||0);
                       // Nassau
                       let nassauD = 0;
                       if (cfg.nassau?.on && ss.matchups) {
@@ -4925,7 +4948,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   const [vegasVal, setVegasVal] = useState(config.vegasVal ?? 1);
   const [ctVal, setCtVal] = useState(config.ctVal ?? 3);
   const [p3Val, setP3Val] = useState(config.p3Val ?? 5);
-  const [casinoVal] = useState(config.casinoVal ?? 3);
+  const [casinoVal] = useState(config.casinoVal ?? 2);
   const casinoBirdieMult = config.casinoBirdieMult ?? 2;
   const casinoEagleMult = config.casinoEagleMult ?? 4;
   const [ptsVal] = useState(config.ptsVal !== undefined ? config.ptsVal : 0);
@@ -6529,37 +6552,71 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                   <div style={{ fontSize: 14, color: "var(--text)", fontWeight: "600", marginBottom: 8 }}>Multipliers (tap 1→2→3)</div>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     {cp.map(pi => {
-                      const eff = (casinoMult[holeIdx][pi] || 1) * casinoGrossBonus(gross[holeIdx][pi], h.par, casinoBirdieMult, casinoEagleMult);
+                      const called = casinoMult[holeIdx][pi] || 1;
                       return (
                       <button key={pi} style={{ flex: cp.length <= 4 ? 1 : undefined, minWidth: cp.length > 4 ? 72 : undefined, padding: "16px 8px", borderRadius: 8, cursor: "pointer",
-                        border: `1px solid ${casinoMult[holeIdx][pi]>1 || eff>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi]) : "var(--border)"}`,
-                        background: casinoMult[holeIdx][pi]>1 || eff>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi])+"22" : "transparent",
+                        border: `1px solid ${called>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi]) : "var(--border)"}`,
+                        background: called>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi])+"22" : "transparent",
                         fontFamily: "'DM Sans', sans-serif" }}
                         onClick={() => toggleCasinoMult(holeIdx, pi)}>
                         <div style={{ fontSize: 16, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], marginBottom: 4, fontFamily: "'DM Sans', sans-serif", fontWeight: "800" }}>{liveNames[pi]}</div>
-                        <div style={{ fontSize: 28, fontWeight: "700", color: eff>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi]) : "var(--dim)", lineHeight: 1, fontFamily: "'Bebas Neue', sans-serif" }}>×{eff}</div>
-                        {eff !== (casinoMult[holeIdx][pi] || 1) && (
-                          <div style={{ fontSize: 9, color: "var(--dim)", marginTop: 2 }}>call ×{casinoMult[holeIdx][pi]}</div>
-                        )}
+                        <div style={{ fontSize: 28, fontWeight: "700", color: called>1 ? (isLight?COLORS_LIGHT[pi]:COLORS[pi]) : "var(--text)", lineHeight: 1, fontFamily: "'Bebas Neue', sans-serif" }}>×{called}</div>
                       </button>
                       );
                     })}
                   </div>
                   <div style={{ marginTop: 10, background: "var(--input)", borderRadius: 8, padding: "8px 10px", border: "1px solid var(--border)" }}>
                     <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 2, marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>STAKES PER MATCHUP</div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 120, overflowY: "auto" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 220, overflowY: "auto" }}>
                       {cp.flatMap((pi, ii) => cp.slice(ii + 1).map(pj => {
-                        const effI = (casinoMult[holeIdx][pi] || 1) * casinoGrossBonus(gross[holeIdx][pi], h.par, casinoBirdieMult, casinoEagleMult);
-                        const effJ = (casinoMult[holeIdx][pj] || 1) * casinoGrossBonus(gross[holeIdx][pj], h.par, casinoBirdieMult, casinoEagleMult);
-                        const effective = effI * effJ;
+                        const calledI = casinoMult[holeIdx][pi] || 1;
+                        const calledJ = casinoMult[holeIdx][pj] || 1;
+                        const bonusI = casinoGrossBonus(gross[holeIdx][pi], h.par, casinoBirdieMult, casinoEagleMult);
+                        const bonusJ = casinoGrossBonus(gross[holeIdx][pj], h.par, casinoBirdieMult, casinoEagleMult);
+                        const baseStake = calledI * calledJ;
+                        const tagFor = (g, bonus) => {
+                          if (bonus <= 1) return null;
+                          const gi = parseInt(g, 10);
+                          if (isNaN(gi) || gi <= 0) return null;
+                          if (gi <= h.par - 2) return "🦅";
+                          if (gi === h.par - 1) return "🐦";
+                          return null;
+                        };
+                        const tagI = tagFor(gross[holeIdx][pi], bonusI);
+                        const tagJ = tagFor(gross[holeIdx][pj], bonusJ);
+                        // Outcome — uses winner's bonus only (matches computeCasino)
+                        const nettI = results[holeIdx]?.n?.[pi];
+                        const nettJ = results[holeIdx]?.n?.[pj];
+                        const colI = isLight ? COLORS_LIGHT[pi] : COLORS[pi];
+                        const colJ = isLight ? COLORS_LIGHT[pj] : COLORS[pj];
+                        // winnerEl sits in its own slot (centered), stakeEl on the far right.
+                        // Pre-resolution: winner unknown, show base stake on the right only.
+                        let winnerEl = null;
+                        let stakeEl = null;
+                        if (nettI == null || nettJ == null) {
+                          stakeEl = <span style={{ fontSize: 14, fontWeight: "700", color: "var(--text)", fontFamily: "'Bebas Neue', sans-serif" }}>×{baseStake}</span>;
+                        } else if (nettI === nettJ) {
+                          winnerEl = <span style={{ fontSize: 14, fontWeight: "700", color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>AS</span>;
+                        } else if (nettI < nettJ) {
+                          const stake = baseStake * bonusI;
+                          winnerEl = <span style={{ fontSize: 14, fontWeight: "700", color: colI, fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</span>;
+                          stakeEl = <span style={{ fontSize: 14, fontWeight: "700", color: colI, fontFamily: "'Bebas Neue', sans-serif" }}>×{stake}</span>;
+                        } else {
+                          const stake = baseStake * bonusJ;
+                          winnerEl = <span style={{ fontSize: 14, fontWeight: "700", color: colJ, fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pj]}</span>;
+                          stakeEl = <span style={{ fontSize: 14, fontWeight: "700", color: colJ, fontFamily: "'Bebas Neue', sans-serif" }}>×{stake}</span>;
+                        }
                         return (
-                          <div key={`${pi}-${pj}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <span style={{ fontSize: 14, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600" }}>
-                              <span style={{ color: isLight?COLORS_LIGHT[pi]:COLORS[pi] }}>{liveNames[pi]}</span>
-                              {" vs "}
-                              <span style={{ color: isLight?COLORS_LIGHT[pj]:COLORS[pj] }}>{liveNames[pj]}</span>
+                          <div key={`${pi}-${pj}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 14, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", fontWeight: "600", flex: "0 1 auto" }}>
+                              <span style={{ color: colI }}>{liveNames[pi]}</span>
+                              {tagI && <span style={{ marginLeft: 2, fontSize: 11 }} title={`bonus ×${bonusI}`}>{tagI}</span>}
+                              <span style={{ color: "var(--text)" }}> vs </span>
+                              <span style={{ color: colJ }}>{liveNames[pj]}</span>
+                              {tagJ && <span style={{ marginLeft: 2, fontSize: 11 }} title={`bonus ×${bonusJ}`}>{tagJ}</span>}
                             </span>
-                            <span style={{ fontSize: 16, fontWeight: "700", color: effective > 1 ? "#e879f9" : "var(--dim)", fontFamily: "'Bebas Neue', sans-serif" }}>×{effective}</span>
+                            <span style={{ flex: "1 1 auto", textAlign: "center" }}>{winnerEl}</span>
+                            <span style={{ flex: "0 0 auto", minWidth: 36, textAlign: "right" }}>{stakeEl}</span>
                           </div>
                         );
                       }))}
@@ -6813,11 +6870,18 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                     <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, color: isLight?COLORS_LIGHT[pi]:COLORS[pi], fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{liveNames[pi]}</div>
                   ))}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${cp.length}, 1fr)` }}>
-                  <div style={{ padding: "8px 10px", fontSize: 15, fontWeight: "600", color: "var(--text)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Casino</div>
+                <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${cp.length}, 1fr)`, borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ padding: "8px 10px", fontSize: 15, fontWeight: "600", color: "var(--text)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>This hole</div>
                   {cp.map(pi => {
                     const v = inPlay[holeIdx] ? res.casino[pi] : 0;
-                    return <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"var(--dim)", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
+                    return <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 15, fontWeight: "600", color: v>0?(isLight?"#16a34a":COLORS[0]):v<0?(isLight?"#cc0000":"#f87171"):"var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{v>0?"+":""}{v||"—"}</div>;
+                  })}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: `100px repeat(${cp.length}, 1fr)` }}>
+                  <div style={{ padding: "8px 10px", fontSize: 15, fontWeight: "600", color: "var(--text)", display: "flex", alignItems: "center", fontFamily: "'DM Sans', sans-serif" }}>Cumulative</div>
+                  {cp.map(pi => {
+                    const c = casinoCum[pi] || 0;
+                    return <div key={pi} style={{ padding: "8px 4px", textAlign: "center", fontSize: 22, fontWeight: "700", color: c>0?(isLight?"#16a34a":COLORS[0]):c<0?(isLight?"#cc0000":"#f87171"):"var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{c>0?"+":""}{c||"—"}</div>;
                   })}
                 </div>
               </div>
@@ -6986,7 +7050,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
               };
               exportRound(roundData);
             }}
-            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, casinoCum, ptsCum, vegasVal, ctVal, p3Val, casinoVal, ptsVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vegasPlayers: vp, vTeams, banker, p3mult, hioRule, ghostEnabled, hzEnabled, hzHero }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
+            onReport={async () => { try { const html = await generateReport({ names: liveNames, holes, liveHcps, inPlay, results, dollars: dollarsTotal, dollarsSubtotal: dollars, vegasCum, ctCum, p3Cum, casinoCum, ptsCum, vegasVal, ctVal, p3Val, casinoVal, ptsVal, adjustments, games, matchupEnabled, nassauResults: matchupResults, matchups, sixesEnabled, sixesData, sixesConfig, sixesPlayerDollars, sixesPlayerTokens, courseName: config.courseName, roundStartTime, qrPayload, playerCount: N, vegasPlayers: vp, vTeams, banker, p3mult, casinoMult, casinoPlayers: cp, hioRule, ghostEnabled, hzEnabled, hzHero }); setReportHTML(html); } catch(e) { alert("Report error: " + e.message); console.error(e); } }}
             onHole={hi => { if (!inPlay[hi]) window.scrollTo(0,0); setHoleIdx(hi); setView("hole"); }}
             isLight={isLight} />
         )}
