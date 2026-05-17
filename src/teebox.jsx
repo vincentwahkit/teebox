@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.27";
+const APP_VERSION = "vw-1.2.29";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -947,9 +947,14 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   const RN = names.length;
   const vp = vegasPlayers || [0,1,2,3];
   const P_COLORS = ["#16a34a","#2563eb","#c2410c","#9333ea","#b45309","#0e7490"];
-  // Whether the printed scorecard reserves a 3rd suffix row for Casino tags.
-  // Only allocated when casino is actually configured — keeps non-casino reports compact.
+  // Each suffix row in the scorecard is reserved only when its game is active. This keeps
+  // the scorecard compact: Casino-only collapses to a single 10px row, banker-only to one
+  // 10px row, vegas-only to a 7px row. Mixed configs stack rows in the documented order
+  // (banker → casino → vegas dot) so a par-3 with both banker and casino still shows both.
+  const showBankerRow = !!games.p3;
   const showCasinoRow = !!(games.casino && casinoPlayers && casinoPlayers.length > 0);
+  const showVegasDotRow = !!(games.vegas && (names.length >= 4 || ghostEnabled || hzEnabled));
+  const anySuffixRow = showBankerRow || showCasinoRow || showVegasDotRow;
   let scRows = "";
   let outTotals = Array(RN).fill(0), inTotals = Array(RN).fill(0), grandTotals = Array(RN).fill(0);
   let outPar = 0, inPar = 0;
@@ -996,14 +1001,14 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
         if (inTeam0) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#333;vertical-align:middle"></span>`;
         else if (inTeam1) vegasDot = `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1.5px solid #333;vertical-align:middle"></span>`;
       }
-      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || (games.p3 && h.par === 3) || showCasinoRow;
-      // Stack: banker (par 3) → casino (all holes, when Casino on) → vegas dot. Each on its
-      // own row so banker and casino tags are both visible when both games run on a par-3.
+      const hasSuffix = anySuffixRow;
+      // Stack: banker → casino → vegas dot. Each row only rendered when its game is on,
+      // so casino-only is a single 10px row (not banker + casino + vegas reserved).
       const suffix = hasSuffix
         ? `<span style="display:inline-block;width:16px;text-align:left;vertical-align:middle;margin-left:1px">
-            <span style="display:block;text-align:left;height:10px;line-height:10px">${bankerTag}</span>
+            ${showBankerRow ? `<span style="display:block;text-align:left;height:10px;line-height:10px">${bankerTag}</span>` : ""}
             ${showCasinoRow ? `<span style="display:block;text-align:left;height:10px;line-height:10px">${casinoTag}</span>` : ""}
-            <span style="display:block;text-align:left;height:7px;line-height:7px">${vegasDot}</span>
+            ${showVegasDotRow ? `<span style="display:block;text-align:left;height:7px;line-height:7px">${vegasDot}</span>` : ""}
            </span>`
         : "";
       row += `<td style="text-align:center;white-space:nowrap"><span style="display:inline-block;width:20px;text-align:center;vertical-align:middle">${scoreHtml}</span>${suffix}</td>`;
@@ -1012,7 +1017,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     scRows += row;
     if (hi < 9) outPar += h.par; else inPar += h.par;
     if (hi === 8) {
-      const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3 || showCasinoRow;
+      const hasSuffix = anySuffixRow;
       scRows += `<tr style="background:#e8f5e8;font-weight:700">
         <td style="text-align:center">OUT</td>
         <td style="text-align:center">${outPar}</td>
@@ -1021,7 +1026,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
       </tr>`;
     }
   }
-  const hasSuffix = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3 || showCasinoRow;
+  const hasSuffix = anySuffixRow;
   scRows += `<tr style="background:#e8f5e8;font-weight:700">
     <td style="text-align:center">IN</td>
     <td style="text-align:center">${inPar}</td>
@@ -1106,7 +1111,7 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
     <div class="header-right" style="color:#e8f5e8">
       <div>${dateStr}</div>
       <div>${timeOfDay} · ${courseName || "Custom Course"}</div>
-      <div style="margin-top:2px;color:#4a7a4a">vw-1.2.2</div>
+      <div style="margin-top:2px;color:#4a7a4a">${APP_VERSION}</div>
     </div>
   </div>
   ${!isSolo ? `<div>
@@ -1120,8 +1125,9 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
         const label = showNext ? "HCP/Next" : "HCP";
         return `<tr style="background:#f8f8f8"><td class="label" style="color:#333;font-size:11px">${label}</td>${names.map((_,i)=>`<td style="font-size:${showNext?11:12}px;color:#333;text-align:center">${relHcps[i]}${showNext?` / <b>${nextRelHcps[i]}</b>`:""}</td>`).join("")}</tr>`;
       })() : ""}
-      ${games.vegas ? `<tr><td class="label">Vegas${hzEnabled?" (Hero or Zero)":ghostEnabled?" (Ghost)":""}</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.casino ? `<tr><td class="label">Casino</td>${RP.map(i=>{const v=(casinoCum[i]||0)*casinoVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}      ${(games.vegas||games.ct||games.p3||games.casino)?`<tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.pts||matchupEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
+      ${games.vegas ? `<tr><td class="label">Vegas${hzEnabled?" (Hero or Zero)":ghostEnabled?" (Ghost)":""}</td>${RP.map(i=>{const v=vegasCum[i]*vegasVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.ct ? `<tr><td class="label">CT</td>${RP.map(i=>{const v=ctCum[i]*ctVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${games.p3 ? `<tr><td class="label">Banker</td>${RP.map(i=>{const v=p3Cum[i]*p3Val;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}      ${adjustments.some(a=>a!==0)?`<tr><td class="label">Adj</td>${adjustments.map(v=>`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}      ${(games.vegas||games.ct||games.p3)?`<tr style="background:#f0f7f0;font-weight:600"><td style="text-align:left;color:#555">${(games.pts||matchupEnabled||games.casino||sixesEnabled)?"Sub":""}</td>${(dollarsSubtotal||dollars).map(v=>`<td class="${v>0?"pos":v<0?"neg":""}" style="font-weight:700">${v>0?"+":""}${v||"—"}</td>`).join("")}</tr>`:""}
       ${games.pts && ptsCum ? `<tr><td class="label">${ptsVal===0?"Pts (pt)":`Pts ($${ptsVal})`}</td>${RP.map(i=>{const v=ptsVal>0?RP.reduce((s,j)=>j!==i?s+(ptsCum[i]-ptsCum[j])*ptsVal:s,0):ptsCum[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${v||"—"}</td>`;}).join("")}</tr>`:""}
+      ${games.casino ? `<tr><td class="label">Casino</td>${RP.map(i=>{const v=(casinoCum[i]||0)*casinoVal;return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}).join("")}</tr>`:""}
       ${sixesEnabled ? `<tr><td class="label">${sixesConfig.stakeType==="cash"?`Sixes ($${sixesConfig.cashAmount})`:(()=>{const tot=sixesPlayerTokens.reduce((s,v)=>s+v,0);return`Sixes (${tot} token${tot===1?"":"s"})`;})()}</td>${RP.map(i=>{if(sixesConfig.stakeType==="cash"){const v=sixesPlayerDollars[i];return`<td class="${v>0?"pos":v<0?"neg":""}">${v>0?"+":""}${v||"—"}</td>`;}else{const v=sixesPlayerTokens[i];return`<td>${v||"—"}</td>`;}}).join("")}</tr>`:""}
       ${matchupEnabled ? (()=>{
         const typeOrder = [["nassau","Nassau"],["gdb","GDB"],["matchplay","Match Play"],["stroke","Stroke Play"]];
@@ -1166,12 +1172,12 @@ async function generateReport({ names, holes, liveHcps, inPlay, results, dollars
   <table class="scorecard">
     <tr>
       <th>H</th><th>Par</th><th>SI</th>
-      ${(function(){ const hasSuffix2 = (games.vegas && (RN >= 4 || ghostEnabled || hzEnabled)) || games.p3 || showCasinoRow; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,8)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
+      ${(function(){ const hasSuffix2 = anySuffixRow; return names.map(n=>`<th><span style="display:inline-block;width:20px;text-align:center">${n.slice(0,8)}</span>${hasSuffix2?`<span style="display:inline-block;width:16px"></span>`:""}</th>`).join(""); })()}
     </tr>
     ${scRows}
   </table>
   <div class="footer">
-    Generated by Tee Box vw-1.2.2 · ${new Date().toLocaleString("en-SG")}
+    Generated by Tee Box ${APP_VERSION} · ${new Date().toLocaleString("en-SG")}
   </div>
   <div style="text-align:center;margin:10px 0;page-break-inside:avoid">
     <h2 style="font-size:9px;color:#4a7a4a;letter-spacing:2px;text-transform:uppercase;margin:8px 0 6px;border-bottom:1px solid #ddd;padding-bottom:2px">QR Code — Full Round Data</h2>
@@ -1934,7 +1940,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   ↻ RELOAD
                 </button>
               )}
-              <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>vw-1.2.2</span>
+              <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif", letterSpacing: 1 }}>{APP_VERSION}</span>
             </div>
             <div onClick={toggleTheme} title={isLight ? "Switch to Night Mode" : "Switch to Outdoor Mode"}
               style={{ width: 36, height: 20, borderRadius: 10, background: isLight ? COLORS[0] : "var(--border)", position: "relative", cursor: "pointer", transition: "background 0.2s", border: "1px solid var(--border2)", flexShrink: 0 }}>
