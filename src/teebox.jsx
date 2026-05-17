@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.29";
+const APP_VERSION = "vw-1.2.30";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -207,20 +207,20 @@ const WARREN_HOLES = [
 ];
 
 const PRESET_COURSES = [
-  { id: "laguna-classic", name: "Laguna National", tee: "Classic (Blue)", holes: LAGUNA_CLASSIC_HOLES },
-  { id: "laguna-masters", name: "Laguna National", tee: "Masters (Blue)", holes: LAGUNA_MASTERS_HOLES },
-  { id: "horizon-hills", name: "Horizon Hills", tee: "Blue", holes: HORIZON_HILLS_HOLES },
-  { id: "nsrcc-changi", name: "NSRCC Changi", tee: "Blue", holes: NSRCC_CHANGI_HOLES },
-  { id: "sembawang-back9", name: "Sembawang CC", tee: "Composite 18 (Blue)", holes: SEMBAWANG_BACK9_HOLES },
-  { id: "ioi-palm-villa", name: "IOI Palm Villa", tee: "Blue", holes: IOI_PALM_VILLA_HOLES },
-  { id: "seletar", name: "Seletar CC", tee: "Blue", holes: SELETAR_HOLES },
-  { id: "batam-hills", name: "Batam Hills", tee: "Blue", holes: BATAM_HILLS_HOLES },
-  { id: "palm-springs-ir", name: "Palm Springs", tee: "Island+Resort (Blue)", holes: PALM_SPRINGS_ISLAND_RESORT },
-  { id: "palm-springs-rp", name: "Palm Springs", tee: "Resort+Palm (Blue)", holes: PALM_SPRINGS_RESORT_PALM },
-  { id: "palm-springs-pi", name: "Palm Springs", tee: "Palm+Island (Blue)", holes: PALM_SPRINGS_PALM_ISLAND },
-  { id: "sukajadi", name: "Sukajadi", tee: "Batam", holes: SUKAJADI_HOLES },
-  { id: "ponderosa", name: "Ponderosa G&CC", tee: "Blue", holes: PONDEROSA_HOLES },
-  { id: "warren", name: "Warren CC", tee: "Blue", holes: WARREN_HOLES },
+  { id: "laguna-classic",  name: "Laguna National Classic",    tee: "Blue", holes: LAGUNA_CLASSIC_HOLES },
+  { id: "laguna-masters",  name: "Laguna National Masters",    tee: "Blue", holes: LAGUNA_MASTERS_HOLES },
+  { id: "horizon-hills",   name: "Horizon Hills",              tee: "Blue", holes: HORIZON_HILLS_HOLES },
+  { id: "nsrcc-changi",    name: "NSRCC Changi",               tee: "Blue", holes: NSRCC_CHANGI_HOLES },
+  { id: "sembawang-back9", name: "Sembawang CC Composite 18",  tee: "Blue", holes: SEMBAWANG_BACK9_HOLES },
+  { id: "ioi-palm-villa",  name: "IOI Palm Villa",             tee: "Blue", holes: IOI_PALM_VILLA_HOLES },
+  { id: "seletar",         name: "Seletar CC",                 tee: "Blue", holes: SELETAR_HOLES },
+  { id: "batam-hills",     name: "Batam Hills",                tee: "Blue", holes: BATAM_HILLS_HOLES },
+  { id: "palm-springs-ir", name: "Palm Springs Island+Resort", tee: "Blue", holes: PALM_SPRINGS_ISLAND_RESORT },
+  { id: "palm-springs-rp", name: "Palm Springs Resort+Palm",   tee: "Blue", holes: PALM_SPRINGS_RESORT_PALM },
+  { id: "palm-springs-pi", name: "Palm Springs Palm+Island",   tee: "Blue", holes: PALM_SPRINGS_PALM_ISLAND },
+  { id: "sukajadi",        name: "Sukajadi",                   tee: "Blue", holes: SUKAJADI_HOLES },
+  { id: "ponderosa",       name: "Ponderosa G&CC",             tee: "Blue", holes: PONDEROSA_HOLES },
+  { id: "warren",          name: "Warren CC",                  tee: "Blue", holes: WARREN_HOLES },
 ];
 
 // PURE COMPUTATION
@@ -802,7 +802,7 @@ function buildQRPayload({ names, hcps, holes, scores, inPlay, games, stakes, vTe
   }) : [];
   const payload = {
     v: "1",
-    c: (courseName||"Custom").replace(/[^\x20-\x7E]/g, '-').slice(0,30),
+    c: (courseName||"Custom").replace(/[^\x20-\x7E\u2014]/g, '-').slice(0,50),
     d: new Date().toISOString().slice(0,10).replace(/-/g,""),
     p: names.map(n=>n.replace(/[^\x20-\x7E]/g, '-').slice(0,8)),
     h: hcps,
@@ -1527,7 +1527,40 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
     }, 500);
     return () => clearTimeout(t);
   }, [groupCode]);
-  // Vegas score cap settings — only applied to Vegas (cap nett before forming Vegas number).
+  // Course library — fetched from Supabase, cached in localStorage as offline fallback.
+  // Triggers on mount and whenever groupCode changes so group-specific courses appear.
+  const [libraryCourses, setLibraryCourses] = useState(() => {
+    try { const c = localStorage.getItem("sws_library_cache"); if (c) return JSON.parse(c); } catch(_) {}
+    return [];
+  });
+  const [libraryOffline, setLibraryOffline] = useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    async function fetchLib() {
+      const codes = ["DEFAULT"];
+      if (groupCode.length === 4 && groupCode !== SUPERUSER_DEFAULT_CODE) codes.push(groupCode);
+      try {
+        const url = `${SUPA_URL_BASE}/course_library?group_code=in.(${codes.join(",")})&source=in.(preloaded,user_added)&verified=eq.true&order=name.asc,tee.asc`;
+        const res = await fetch(url, { headers: { apikey: SUPA_KEY, Authorization: "Bearer " + SUPA_KEY } });
+        if (!res.ok) throw new Error("fetch failed");
+        const arr = await res.json();
+        // Deduplicate: prefer group-specific entry over DEFAULT for same name+tee
+        const seen = new Set();
+        const deduped = [...arr.filter(c => c.group_code !== "DEFAULT"), ...arr.filter(c => c.group_code === "DEFAULT")]
+          .filter(c => { const k = c.name + "|" + c.tee; if (seen.has(k)) return false; seen.add(k); return true; })
+          .sort((a, b) => a.name.localeCompare(b.name) || a.tee.localeCompare(b.tee));
+        if (!cancelled) {
+          setLibraryCourses(deduped);
+          setLibraryOffline(false);
+          try { localStorage.setItem("sws_library_cache", JSON.stringify(deduped)); } catch(_) {}
+        }
+      } catch(_) {
+        if (!cancelled) setLibraryOffline(true);
+      }
+    }
+    fetchLib();
+    return () => { cancelled = true; };
+  }, [groupCode]);
   // Default par+3 for par-3, par+4 for par-4/5/6 (matches historical hardcode).
   // No UI exposed yet; values flow through to Vegas pipeline only. KIV configurable UI.
   const [capPar3, setCapPar3] = useState(sc?.capPar3 ?? 3);
@@ -2339,16 +2372,32 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 {/* Library */}
                 {showLib && (
                   <div style={{ background: "var(--input)", border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 10 }}>
-                    <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 2, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>PRELOADED</div>
-                    {PRESET_COURSES.map(c => (
-                      <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--border)" }}>
-                        <div style={{ cursor: "pointer", flex: 1 }} onClick={() => loadCourse(c)}>
-                          <div style={{ fontSize: 14, color: loadedCourse?.id===c.id?"var(--accent)":"var(--text)", fontWeight: "600" }}>{c.name} {loadedCourse?.id===c.id && "✓"}</div>
-                          <div style={{ fontSize: 12, color: "var(--text)" }}>⛳ {c.tee}</div>
-                        </div>
-                        <div style={{ fontSize: 11, color: "#3a6a3a", padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 6 }}>built-in</div>
+                    {libraryCourses.length > 0 ? (<>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 2, fontFamily: "'DM Sans', sans-serif" }}>LIBRARY</div>
+                        {libraryOffline && <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "'DM Sans', sans-serif" }}>cached</div>}
                       </div>
-                    ))}
+                      {libraryCourses.map(c => (
+                        <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--border)" }}>
+                          <div style={{ cursor: "pointer", flex: 1 }} onClick={() => loadCourse(c)}>
+                            <div style={{ fontSize: 14, color: loadedCourse?.id===c.id?"var(--accent)":"var(--text)", fontWeight: "600" }}>{c.name} {loadedCourse?.id===c.id && "✓"}</div>
+                            <div style={{ fontSize: 12, color: "var(--text)" }}>⛳ {c.tee}{c.note ? ` · ${c.note}` : ""}</div>
+                          </div>
+                          {c.course_rating && <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 36, textAlign: "right" }}>{c.course_rating}/{c.slope||"—"}</div>}
+                        </div>
+                      ))}
+                    </>) : (<>
+                      <div style={{ fontSize: 10, color: "var(--accent)", letterSpacing: 2, marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>PRELOADED</div>
+                      {PRESET_COURSES.map(c => (
+                        <div key={c.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 0", borderBottom: "1px solid var(--border)" }}>
+                          <div style={{ cursor: "pointer", flex: 1 }} onClick={() => loadCourse(c)}>
+                            <div style={{ fontSize: 14, color: loadedCourse?.id===c.id?"var(--accent)":"var(--text)", fontWeight: "600" }}>{c.name} {loadedCourse?.id===c.id && "✓"}</div>
+                            <div style={{ fontSize: 12, color: "var(--text)" }}>⛳ {c.tee}</div>
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--muted)", padding: "3px 8px", border: "1px solid var(--border)", borderRadius: 6 }}>offline</div>
+                        </div>
+                      ))}
+                    </>)}
                     {courses.length > 0 && (
                       <>
                         <div style={{ fontSize: 10, color: "var(--text)", letterSpacing: 2, margin: "10px 0 8px", fontFamily: "'DM Sans', sans-serif" }}>SAVED</div>
