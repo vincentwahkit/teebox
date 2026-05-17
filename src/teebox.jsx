@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.32";
+const APP_VERSION = "vw-1.2.33";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1741,8 +1741,17 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
     setSaveError("");
     const src = course || loadedCourse;
     const isPreset = src && PRESET_COURSES.find(p => p.id === src.id);
-    setSaveName(src ? src.name : "");
-    setSaveTee(src ? (src.tee === "—" ? "" : src.tee) : "");
+    // When tee is absent (e.g. course loaded from sws_lastcourse after a round),
+    // courseName is stored as "Name — Tee" in src.name. Split on the last " — ".
+    let derivedName = src ? src.name : "";
+    let derivedTee  = src ? (src.tee === "—" ? "" : src.tee) : "";
+    if (!derivedTee && derivedName.includes(" \u2014 ")) {
+      const idx = derivedName.lastIndexOf(" \u2014 ");
+      derivedTee  = derivedName.slice(idx + 3);
+      derivedName = derivedName.slice(0, idx);
+    }
+    setSaveName(derivedName);
+    setSaveTee(derivedTee);
     setSaveNote(src ? (src.note || "") : "");
     setOverwriteId(src && !isPreset ? src.id : null);
     setShowSave(true); setShowLib(false);
@@ -8476,7 +8485,7 @@ export default function App() {
     window.scrollTo(0, 0);
     // Remember course from resumed round
     if (round.config.courseName) {
-      try { localStorage.setItem("sws_lastcourse", JSON.stringify({ name: round.config.courseName, tee: "", holes: round.config.holes })); } catch(_) {}
+      try { localStorage.setItem("sws_lastcourse", JSON.stringify({ name: round.config.courseName, tee: "", holes: round.config.holes, libraryId: round.config.courseLibraryId || null })); } catch(_) {}
     }
   }
   // Discard the currently-edited round. Full nuke (Option B):
