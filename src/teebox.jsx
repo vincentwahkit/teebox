@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.23";
+const APP_VERSION = "vw-1.2.24";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -46,7 +46,17 @@ function supaUpsert(table, roundId, payload) {
       "Prefer": "resolution=merge-duplicates,return=minimal",
     },
     body: JSON.stringify({ ...payload, round_id: roundId }),
-  }).catch(() => {});
+  }).then(res => {
+    if (!res.ok) {
+      // Surface the actual Supabase/PostgREST error so it's visible in DevTools console.
+      // Most common cause: a column in the payload doesn't exist in the DB table yet.
+      res.text().then(body => {
+        console.error(`[supaUpsert] ${table} failed (HTTP ${res.status}):`, body);
+      });
+    }
+  }).catch(err => {
+    console.error(`[supaUpsert] ${table} network error:`, err);
+  });
 }
 // Fire-and-forget DELETE by round_id. Used by the Discard flow to remove
 // the abandoned round from Supabase. RLS DELETE policy on rounds_full and
