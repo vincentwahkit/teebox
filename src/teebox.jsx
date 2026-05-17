@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.31";
+const APP_VERSION = "vw-1.2.32";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -1724,6 +1724,8 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       setCourses(updated); setSaveName(""); setSaveTee(""); setSaveNote(""); setShowSave(false); setOverwriteId(null);
       setStorageMsg(`"${entry.name} / ${entry.tee}" ${overwriteId ? "updated" : "saved"}.`);
       setLoadedCourse(entry);
+      setLoadedCourseLibraryId(null);
+      try { localStorage.setItem("sws_lastcourse", JSON.stringify({ id: entry.id, name: entry.name, tee: entry.tee, holes: entry.holes, libraryId: null })); } catch(_) {}
       setTimeout(() => setStorageMsg(""), 2500);
     } catch (_) { setStorageMsg("Save failed."); }
   }
