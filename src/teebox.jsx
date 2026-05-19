@@ -8589,17 +8589,28 @@ export default function App() {
     } catch(_) { return null; }
   });
   const [showSplash, setShowSplash] = useState(true);
-  // SW update detection — fires when browser has downloaded a new service worker
-  // (authoritative: Vercel deployed a new version). Banner prompts user to refresh.
+  // SW update detection.
+  // Vite PWA defaults to skipWaiting:true — new SW activates immediately,
+  // so reg.waiting is never set. The right signal is `controllerchange` on
+  // navigator.serviceWorker, which fires when the new SW takes over.
+  // We also call reg.update() on mount + visibilitychange so the browser
+  // checks for a new SW immediately rather than waiting up to 24 hours.
+  // After controllerchange the in-memory JS is still the old bundle;
+  // a reload serves fresh assets from the new SW cache.
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateDismissed, setUpdateDismissed] = useState(false);
-  const swRegRef = React.useRef(null);
   React.useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
+    // Only show banner if a SW was already in control (not first install)
+    const hadController = !!navigator.serviceWorker.controller;
+    const onControllerChange = () => {
+      if (hadController) setUpdateAvailable(true);
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+    // Also cover the manual skipWaiting case (reg.waiting present)
     navigator.serviceWorker.getRegistration().then(reg => {
       if (!reg) return;
-      swRegRef.current = reg;
-      if (reg.waiting) { setUpdateAvailable(true); return; }
+      if (reg.waiting && hadController) { setUpdateAvailable(true); }
       reg.addEventListener('updatefound', () => {
         const nw = reg.installing;
         if (!nw) return;
@@ -8609,7 +8620,22 @@ export default function App() {
           }
         });
       });
+      // Proactively check for a new SW on mount
+      reg.update().catch(() => {});
     }).catch(() => {});
+    // Re-check when user brings the app back to foreground
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        navigator.serviceWorker.getRegistration()
+          .then(reg => reg?.update())
+          .catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
   const [savedRounds, setSavedRounds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("sws_rounds") || "[]"); } catch { return []; }
@@ -8759,15 +8785,8 @@ export default function App() {
             <div style={{ fontSize: 13, fontWeight: 700, color: "#fef3c7" }}>Update available</div>
             <div style={{ fontSize: 11, color: "#fde68a", marginTop: 1 }}>New version downloaded — refresh to activate</div>
           </div>
-          <button onClick={() => {
-            const reg = swRegRef.current;
-            if (reg?.waiting) {
-              navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload(), { once: true });
-              reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-            } else {
-              window.location.reload();
-            }
-          }} style={{
+          <button onClick={() => window.location.reload()}
+            style={{
             background: "#fef3c7", color: "#92400e", border: "none",
             borderRadius: 8, padding: "7px 12px", fontSize: 13, fontWeight: 700,
             cursor: "pointer", flexShrink: 0, fontFamily: "'DM Sans', sans-serif",
