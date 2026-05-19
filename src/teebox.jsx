@@ -8550,6 +8550,61 @@ const S = {
 };
 
 // SLOW REVEAL COMPONENT
+function UpdateModal({ onReload, onDismiss }) {
+  const [secs, setSecs] = React.useState(3);
+  React.useEffect(() => {
+    if (secs <= 0) { onReload(); return; }
+    const t = setTimeout(() => setSecs(s => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [secs]);
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 9999,
+      background: "rgba(0,0,0,0.7)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: 24,
+    }}>
+      <div style={{
+        background: "#1c1108", border: "1px solid #b45309",
+        borderRadius: 16, padding: "28px 24px", width: "100%", maxWidth: 340,
+        textAlign: "center", fontFamily: "'DM Sans', sans-serif",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+      }}>
+        <div style={{ fontSize: 36, marginBottom: 12 }}>↻</div>
+        <div style={{ fontSize: 20, fontWeight: 800, color: "#fef3c7", marginBottom: 8, fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2 }}>
+          UPDATE AVAILABLE
+        </div>
+        <div style={{ fontSize: 13, color: "#fde68a", marginBottom: 24, lineHeight: 1.5 }}>
+          A new version has been downloaded. Reloading in <span style={{ fontWeight: 700, color: "#fff" }}>{secs}</span>s…
+        </div>
+        {/* Countdown ring */}
+        <svg width={64} height={64} style={{ display: "block", margin: "0 auto 20px" }}>
+          <circle cx={32} cy={32} r={28} fill="none" stroke="#92400e" strokeWidth={4} />
+          <circle cx={32} cy={32} r={28} fill="none" stroke="#fbbf24" strokeWidth={4}
+            strokeDasharray={`${(secs / 3) * 175.9} 175.9`}
+            strokeLinecap="round"
+            transform="rotate(-90 32 32)"
+            style={{ transition: "stroke-dasharray 0.9s linear" }} />
+          <text x={32} y={37} textAnchor="middle" fontSize={20} fontWeight={700}
+            fill="#fef3c7" fontFamily="'DM Sans', sans-serif">{secs}</text>
+        </svg>
+        <button onClick={onReload} style={{
+          width: "100%", padding: "14px", marginBottom: 10,
+          background: "#fbbf24", border: "none", borderRadius: 10,
+          fontSize: 15, fontWeight: 700, color: "#1c1108",
+          cursor: "pointer", fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2,
+        }}>RELOAD NOW</button>
+        <button onClick={onDismiss} style={{
+          width: "100%", padding: "10px",
+          background: "transparent", border: "1px solid #92400e",
+          borderRadius: 10, fontSize: 13, color: "#fde68a",
+          cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+        }}>Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [config, setConfig] = useState(null);
   const [savedScores, setSavedScores] = useState(null);
@@ -8774,27 +8829,7 @@ export default function App() {
         }}>{superToast}</div>
       )}
       {updateAvailable && !updateDismissed && (
-        <div style={{
-          position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
-          background: "#92400e", borderBottom: "1px solid #b45309",
-          padding: "10px 14px", display: "flex", alignItems: "center",
-          gap: 10, fontFamily: "'DM Sans', sans-serif", maxWidth: 480, margin: "0 auto",
-        }}>
-          <span style={{ fontSize: 16 }}>↻</span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#fef3c7" }}>Update available</div>
-            <div style={{ fontSize: 11, color: "#fde68a", marginTop: 1 }}>New version downloaded — refresh to activate</div>
-          </div>
-          <button onClick={() => window.location.reload()}
-            style={{
-            background: "#fef3c7", color: "#92400e", border: "none",
-            borderRadius: 8, padding: "7px 12px", fontSize: 13, fontWeight: 700,
-            cursor: "pointer", flexShrink: 0, fontFamily: "'DM Sans', sans-serif",
-          }}>Refresh</button>
-          <button onClick={() => setUpdateDismissed(true)}
-            style={{ background: "transparent", border: "none", color: "#fde68a",
-              fontSize: 18, cursor: "pointer", padding: "0 2px", flexShrink: 0 }}>✕</button>
-        </div>
+        <UpdateModal onReload={() => window.location.reload()} onDismiss={() => setUpdateDismissed(true)} />
       )}
       {config
         ? <Scorecard config={config} onBack={(scores, rid) => {
