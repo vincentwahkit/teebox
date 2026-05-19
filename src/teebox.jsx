@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.34";
+const APP_VERSION = "vw-1.2.37";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -281,7 +281,10 @@ function flipNum(n) {
   const hi = n % 10;
   return hi * 10 + lo;
 }
-function teamTrigger(g1, g2, par) {
+function teamTrigger(g1, g2, par, vegasBonus) {
+  const eb = vegasBonus?.eagle2Birdie ?? 20; // Eagle / 2 Birdies bonus
+  const bp = vegasBonus?.birdiePar    ?? 20; // Birdie + Par bonus
+  const tp = vegasBonus?.twoPar       ?? 10; // 2 Pars bonus
   function valid(g) { const n = parseInt(g, 10); return !isNaN(n) && n > 0; }
   function isEagle(g) { return valid(g) && parseInt(g, 10) <= par - 2; }
   function isBirdie(g) { return valid(g) && parseInt(g, 10) === par - 1; }
@@ -290,15 +293,15 @@ function teamTrigger(g1, g2, par) {
   const birdies = [g1, g2].filter(isBirdie).length;
   const pars = [g1, g2].filter(isPar).length;
   const parOrBetter = (g) => valid(g) && parseInt(g, 10) <= par;
-  // Eagle: flip + x2 always; +20 bonus only if partner also makes par or better
+  // Eagle: flip + x2 always; bonus only if partner also makes par or better
   if (eagle) {
     const partnerParOrBetter = isEagle(g1) ? parOrBetter(g2) : parOrBetter(g1);
-    return { flip: true, mult: 2, bonus: partnerParOrBetter ? 20 : 0 };
+    return { flip: true, mult: 2, bonus: partnerParOrBetter ? eb : 0 };
   }
-  if (birdies >= 2) return { flip: true, mult: 2, bonus: 20 };
-  if (birdies === 1 && pars >= 1) return { flip: true, mult: 1, bonus: 20 };
+  if (birdies >= 2) return { flip: true, mult: 2, bonus: eb };
+  if (birdies === 1 && pars >= 1) return { flip: true, mult: 1, bonus: bp };
   if (birdies === 1) return { flip: true, mult: 1, bonus: 0 };
-  if (pars >= 2) return { flip: false, mult: 1, bonus: 10 };
+  if (pars >= 2) return { flip: false, mult: 1, bonus: tp };
   return { flip: false, mult: 1, bonus: 0 };
 }
 // Vegas rule sets:
@@ -306,11 +309,11 @@ function teamTrigger(g1, g2, par) {
 // "council" — flip gross first, cancel if both, then nett, winner mult+bonus (DEFAULT)
 // "double"  — flip gross first, no cancellation, then nett, winner mult+bonus
 // Tie-break (all rules): lower gross Vegas number wins the bonus; if gross also tied, no points
-function computeVegas(teams, gross, nett, par, rules) {
+function computeVegas(teams, gross, nett, par, rules, vegasBonus) {
   if (rules === undefined) rules = "council";
   const [t0, t1] = teams;
-  const trigA = teamTrigger(gross[t0[0]], gross[t0[1]], par);
-  const trigB = teamTrigger(gross[t1[0]], gross[t1[1]], par);
+  const trigA = teamTrigger(gross[t0[0]], gross[t0[1]], par, vegasBonus);
+  const trigB = teamTrigger(gross[t1[0]], gross[t1[1]], par, vegasBonus);
   const gvA = vegasNum(parseInt(gross[t0[0]],10), parseInt(gross[t0[1]],10));
   const gvB = vegasNum(parseInt(gross[t1[0]],10), parseInt(gross[t1[1]],10));
 
@@ -1497,6 +1500,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
   const [bankerNett, setBankerNett] = useState(sc?.bankerNett ?? true);
   const [hcpCap, setHcpCap] = useState(sc?.hcpCap ?? null);
   const [vegasRules, setVegasRules] = useState(sc?.vegasRules ?? "council");
+  // Vegas bonus point config — user-adjustable via steppers in Setup.
+  // All three share the same ±5 stepper, min 0. Defaults match original hardcoded values.
+  const [vegasEagle2BirdieBonus, setVegasEagle2BirdieBonus] = useState(sc?.vegasEagle2BirdieBonus ?? 20);
+  const [vegasBirdieParBonus,    setVegasBirdieParBonus]    = useState(sc?.vegasBirdieParBonus    ?? 20);
+  const [vegas2ParBonus,         setVegas2ParBonus]         = useState(sc?.vegas2ParBonus         ?? 10);
   const [showVegasAdvanced, setShowVegasAdvanced] = useState(false);
   const [hioRule, setHioRule] = useState(sc?.hioRule ?? true);
   const [ptsVal, setPtsVal] = useState(sc?.ptsVal !== undefined ? sc.ptsVal : 0);
@@ -1662,6 +1670,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
       segments: [[[0,1],[2,3]], [[0,2],[1,3]], [[0,3],[1,2]]],
       shadowPlayer: null,
       shadowOf: [null, null, null],
+      // Starting nine — "F" (front 9 first) or "B" (back 9 first).
+      // Drives Sixes segment assignment across the F9/B9 boundary. Scoped to
+      // Sixes only because Nassau/GDB don't need it (their segments don't
+      // cross the boundary). vw-1.2.35.
+      // null = no choice yet — START ROUND blocks until user picks.
+      startingNine: null,
     };
     return sc?.sixesConfig ? { ...defaults, ...sc.sixesConfig } : defaults;
   });
@@ -1856,6 +1870,7 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
         : Array.from({ length: playerCount }, (_, i) => i)),
       holes, vegasVal, ctVal, p3Val, casinoVal, casinoBirdieMult, casinoEagleMult,
       hcpThreshold, bankerNett, hcpCap, vegasRules, hioRule,
+      vegasEagle2BirdieBonus, vegasBirdieParBonus, vegas2ParBonus,
       threeBallVariant, hzBonus,
       capPar3, capOther,
       games: {
@@ -2822,10 +2837,10 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                     </thead>
                     <tbody>
                       {[
-                        ["Eagle / 2 Birdies", "✓", "×2", "+20"],
-                        ["Birdie + Par",       "✓", "×1", "+20"],
+                        ["Eagle / 2 Birdies", "✓", "×2", vegasEagle2BirdieBonus > 0 ? `+${vegasEagle2BirdieBonus}` : "—"],
+                        ["Birdie + Par",       "✓", "×1", vegasBirdieParBonus    > 0 ? `+${vegasBirdieParBonus}`    : "—"],
                         ["Birdie only",        "✓", "×1", "—"],
-                        ["2 Pars",             "—", "×1", "+10"],
+                        ["2 Pars",             "—", "×1", vegas2ParBonus         > 0 ? `+${vegas2ParBonus}`         : "—"],
                         ["Other",              "—", "×1", "—"],
                       ].map(([cond, flip, mult, bonus]) => (
                         <tr key={cond} style={{ borderBottom: "1px solid var(--border)" }}>
@@ -2839,6 +2854,24 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                   </table>
                   <div style={{ fontSize: 12, color: "var(--text)", fontFamily: "'DM Sans', sans-serif", marginTop: 6 }}>
                     Mult and bonus awarded to winning team only. Eagle bonus only applies if partner makes par or better.
+                  </div>
+                  {/* Bonus steppers */}
+                  <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+                    <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 8, fontFamily: "'DM Sans', sans-serif" }}>BONUS POINTS</div>
+                    {[
+                      ["Eagle / 2 Birdies", vegasEagle2BirdieBonus, setVegasEagle2BirdieBonus],
+                      ["Birdie + Par",       vegasBirdieParBonus,    setVegasBirdieParBonus],
+                      ["2 Pars",             vegas2ParBonus,         setVegas2ParBonus],
+                    ].map(([label, val, setter]) => (
+                      <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <span style={{ fontSize: 13, color: "var(--text)", fontFamily: "'DM Sans', sans-serif" }}>{label}</span>
+                        <div style={{ display: "flex", alignItems: "center", background: "var(--input)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+                          <button onClick={() => setter(v => Math.max(0, v - 5))} style={S.pmBtnInline}>−</button>
+                          <span style={{ width: 42, textAlign: "center", color: val > 0 ? "var(--accent)" : "var(--dim)", fontSize: 14, fontWeight: "700", fontFamily: "'DM Sans', sans-serif" }}>{val > 0 ? `+${val}` : "—"}</span>
+                          <button onClick={() => setter(v => v + 5)} style={S.pmBtnInline}>+</button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -2970,6 +3003,32 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                 {/* Sixes config */}
                 {on && available && (
                   <div style={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+                    {/* Starting nine — drives play-order for segment assignment.
+                        Sixes is the only game where this matters (segments cross
+                        the F9/B9 boundary). Editable while round in progress —
+                        just park & resume to come back here. */}
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>STARTING NINE</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        {[["F", "Front 9 first"], ["B", "Back 9 first"]].map(([val, label]) => (
+                          <button key={val} onClick={() => setSixesConfig(s => ({ ...s, startingNine: val }))}
+                            style={{ flex: 1, padding: "8px 10px", borderRadius: 8, fontSize: 13, fontWeight: "600", cursor: "pointer",
+                              border: `1px solid ${sixesConfig.startingNine === val ? "var(--accent)" : (sixesConfig.startingNine == null ? "var(--neg)" : "var(--border)")}`,
+                              background: sixesConfig.startingNine === val ? (isLight?"#000":"var(--accent)") : "transparent",
+                              color: sixesConfig.startingNine === val ? "#fff" : "var(--text)",
+                              fontFamily: "'DM Sans', sans-serif" }}>{label}</button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 11, marginTop: 6, fontFamily: "'DM Sans', sans-serif",
+                        color: sixesConfig.startingNine == null ? "var(--neg)" : "var(--text)",
+                        fontWeight: sixesConfig.startingNine == null ? 600 : "normal" }}>
+                        {sixesConfig.startingNine === "B"
+                          ? "Segments: holes 10–15, 16–18 + 1–3, 4–9"
+                          : sixesConfig.startingNine === "F"
+                            ? "Segments: holes 1–6, 7–12, 13–18"
+                            : "⚠ Required — pick where you're starting from"}
+                      </div>
+                    </div>
                     {/* Mode toggle */}
                     <div style={{ marginBottom: 12 }}>
                       <div style={{ fontSize: 11, color: "var(--accent)", letterSpacing: 1, fontWeight: "700", marginBottom: 6, fontFamily: "'DM Sans', sans-serif" }}>MODE</div>
@@ -3449,6 +3508,12 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
             if (games.casino && canCasino && casinoPlayers.filter(i => i < playerCount).length < 2) {
               setStartError("Select at least 2 players for Casino");
               setTimeout(() => setStartError(""), 3000);
+              return;
+            }
+            if (games.sixes && canSixes && !sixesConfig.startingNine && !roundInProgress) {
+              setStartError("Sixes is on — pick Starting Nine in Games & Stakes");
+              setActiveSection("games");
+              setTimeout(() => setStartError(""), 4000);
               return;
             }
             setStartError("");
@@ -5158,6 +5223,10 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     const fromAuto = config._savedState?.holeIdx;
     const idx = (typeof fromHome === "number" ? fromHome : fromAuto);
     if (typeof idx === "number" && idx >= 0 && idx < 18) return idx;
+    // Fresh start: if Sixes is on and user picked "Back 9 first", land on
+    // hole 10 (index 9). Sixes-scoped — no separate round-level starting tee
+    // (vw-1.2.35).
+    if (config.games?.sixes && config.sixesConfig?.startingNine === "B") return 9;
     return 0;
   });
   const [inPlay, setInPlay] = useState(() => savedScores?.inPlay || saved?.inPlay || Array(18).fill(false));
@@ -5187,6 +5256,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     (config.nassau?.matchups || DEFAULT_MATCHUP).map(m => ({ ...m }))
   );
   const [showBackStrokeModal, setShowBackStrokeModal] = useState(false);
+  // Sixes Starting Nine quick-edit modal (vw-1.2.35). Lets users fix a mistaken
+  // pick mid-round without parking + going back to Setup.
+  const [showSixesNineModal, setShowSixesNineModal] = useState(false);
   // Refs for stale-closure-safe access inside setScore setTimeout
   const vTeamsRef = React.useRef(vTeams);
   const bankerRef = React.useRef(banker);
@@ -5241,7 +5313,11 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   const saveNow = React.useCallback(() => {
     onSave({
       roundId,
-      config: { ...config, _roundId: roundId, _savedState: {
+      // Spread liveSixesConfigRef into config so mid-round edits to Starting
+      // Nine (and any future live edits) persist across park/resume. Without
+      // this, sc.sixesConfig at resume time would still be the original
+      // setup-time snapshot.
+      config: { ...config, sixesConfig: liveSixesConfigRef.current, _roundId: roundId, _savedState: {
         gross,
         vTeams: vTeamsRef.current,
         banker: bankerRef.current,
@@ -5376,7 +5452,11 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     // Cap is Vegas-specific (other games use raw nett for true match-play comparison).
     const vegasCap = h.par === 3 ? h.par + capPar3 : h.par + capOther;
     nettForVegas = nettForVegas.map(v => v === null ? null : Math.min(v, vegasCap));
-    let vr = (games.vegas && (N >= 4 || ghostEnabled || hzEnabled) && !isHIO) ? computeVegas(teamsForVegas, grossForVegas, nettForVegas, h.par, vegasRules) : null;
+    let vr = (games.vegas && (N >= 4 || ghostEnabled || hzEnabled) && !isHIO) ? computeVegas(teamsForVegas, grossForVegas, nettForVegas, h.par, vegasRules, {
+      eagle2Birdie: config.vegasEagle2BirdieBonus ?? 20,
+      birdiePar:    config.vegasBirdieParBonus    ?? 20,
+      twoPar:       config.vegas2ParBonus         ?? 10,
+    }) : null;
     // HZ: if bonus toggle is OFF, zero out bonuses from result
     if (vr && hzEnabled && !hzBonus) {
       const adjNetA = vr.netA - (vr.bonusA || 0) + (vr.bonusB || 0);
@@ -5452,10 +5532,22 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
   });
 
   // ── Sixes computation ──
-  // Walk through holes, assigning each in-play hole to a segment (1-3)
+  // Walk through holes IN PLAY ORDER, assigning each in-play hole to a segment (1-3)
   // Segment advances when 6 in-play holes played OR early close (lead > remaining)
+  // Play order is driven by sixesConfig.startingNine ("F" = front 9 first,
+  // "B" = back 9 first) so a back-9-start group gets segments
+  // {10-15, 16-18+1-3, 4-9} instead of the index-order garbage the old loop
+  // produced (vw-1.2.35 fix). Sixes-scoped because Nassau/GDB segments don't
+  // cross the F9/B9 boundary.
+  // liveSixesConfig is a mutable mirror of config.sixesConfig — lets the user
+  // fix a mistaken Starting Nine pick from inside the round (Quick-edit modal).
+  // Any change recomputes all segments retroactively because compute is
+  // deterministic. Persisted via saveNow (spread back into saved config).
   const sixesEnabled = games.sixes && config.sixesConfig && (N === 4 || N === 5 || N === 6);
-  const sixesConfig = config.sixesConfig;
+  const [liveSixesConfig, setLiveSixesConfig] = useState(() => config.sixesConfig);
+  const liveSixesConfigRef = useRef(liveSixesConfig);
+  React.useEffect(() => { liveSixesConfigRef.current = liveSixesConfig; }, [liveSixesConfig]);
+  const sixesConfig = liveSixesConfig;
   const sixesData = { segments: [], holeAssignments: Array(18).fill(null) };
   if (sixesEnabled) {
     let currentSeg = 0;
@@ -5467,7 +5559,13 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
       { segIdx: 2, teams: sixesConfig.segments[2], holes: [], t1pts: 0, t2pts: 0, closed: false, closedEarly: false, closedAt: null },
     ];
     const maxPtsPerHole = sixesConfig.mode === "top2" ? 2 : 1;
-    for (let hi = 0; hi < 18; hi++) {
+    // Build play-order index list. Default Front 9 first when startingNine
+    // missing (covers legacy rounds saved before vw-1.2.35).
+    const startedBack = sixesConfig.startingNine === "B";
+    const playOrder = startedBack
+      ? [9,10,11,12,13,14,15,16,17, 0,1,2,3,4,5,6,7,8]
+      : [0,1,2,3,4,5,6,7,8, 9,10,11,12,13,14,15,16,17];
+    for (const hi of playOrder) {
       if (!inPlay[hi]) continue;
       if (currentSeg >= 3) break; // all segments closed
       const [t1, t2] = sixesConfig.segments[currentSeg];
@@ -5633,6 +5731,9 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         game_settings: {
           vegasVal, ctVal, p3Val, casinoVal, casinoBirdieMult, casinoEagleMult, casinoPlayers: cp, ptsVal,
           vegasRules: config.vegasRules,
+          vegasEagle2BirdieBonus: config.vegasEagle2BirdieBonus ?? 20,
+          vegasBirdieParBonus:    config.vegasBirdieParBonus    ?? 20,
+          vegas2ParBonus:         config.vegas2ParBonus         ?? 10,
           hcpCap: config.hcpCap,
           hcpThreshold: config.hcpThreshold,
           bankerNett: config.bankerNett,
@@ -5955,6 +6056,44 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
         @keyframes slideDown { from { transform: translateY(-30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
         @keyframes tickerScroll { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(calc(-1 * var(--ticker-distance, 50%)), 0, 0); } }
       `}</style>
+      {showSixesNineModal && sixesEnabled && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={() => setShowSixesNineModal(false)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 380 }}>
+            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 20, letterSpacing: 2, color: "var(--text)", marginBottom: 4, textAlign: "center" }}>
+              CHANGE STARTING NINE
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text)", textAlign: "center", marginBottom: 16, fontFamily: "'DM Sans', sans-serif" }}>
+              Recomputes all Sixes segments. Use this only if the original pick was wrong.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
+              {[["F", "Front 9 first", "Segments: 1–6, 7–12, 13–18"],
+                ["B", "Back 9 first", "Segments: 10–15, 16–18+1–3, 4–9"]].map(([val, label, sub]) => {
+                const selected = sixesConfig.startingNine === val;
+                return (
+                  <button key={val}
+                    onClick={() => { setLiveSixesConfig(s => ({ ...s, startingNine: val })); setShowSixesNineModal(false); }}
+                    style={{ padding: "14px 14px", borderRadius: 10, cursor: "pointer", textAlign: "left",
+                      border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                      background: selected ? (isLight?"#000":"var(--accent)") : "transparent",
+                      color: selected ? "#fff" : "var(--text)",
+                      fontFamily: "'DM Sans', sans-serif" }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 2 }}>{label}{selected && " ✓"}</div>
+                    <div style={{ fontSize: 11, opacity: 0.8 }}>{sub}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={() => setShowSixesNineModal(false)}
+              style={{ width: "100%", padding: "12px", background: "transparent", border: "1px solid var(--border)",
+                color: "var(--text)", borderRadius: 10, fontSize: 14, fontFamily: "'DM Sans', sans-serif",
+                fontWeight: 500, cursor: "pointer" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {showBackStrokeModal && matchupEnabled && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ background: "var(--card)", border: "1px solid var(--border2)", borderRadius: 14, padding: 20, width: "100%", maxWidth: 380, maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
@@ -7033,6 +7172,29 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             {/* Sixes standalone section */}
             {sixesEnabled && (() => {
               const segIdx = sixesData.holeAssignments[holeIdx];
+              // Starting Nine indicator — shown inside both panel branches.
+              // Tappable: opens modal to fix a mistaken pick. Legacy rounds
+              // (startingNine null) show "(unset)" in muted red as a nudge.
+              const nineLabel = sixesConfig.startingNine === "B"
+                ? "Back 9 first"
+                : sixesConfig.startingNine === "F"
+                  ? "Front 9 first"
+                  : "(unset — tap to set)";
+              const nineUnset = !sixesConfig.startingNine;
+              const nineIndicator = (
+                <div onClick={() => setShowSixesNineModal(true)}
+                  style={{
+                    marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--border)",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                    fontSize: 11, fontFamily: "'DM Sans', sans-serif",
+                    color: nineUnset ? "var(--neg)" : "var(--text)",
+                    cursor: "pointer",
+                  }}>
+                  <span style={{ letterSpacing: 1, fontWeight: 600 }}>STARTING NINE:</span>
+                  <span style={{ fontWeight: nineUnset ? 700 : 600 }}>{nineLabel}</span>
+                  <span style={{ color: "var(--accent)" }}>✎</span>
+                </div>
+              );
               if (segIdx === null || segIdx === undefined) {
                 // Hole not yet played / not in play — show context for current segment
                 if (sixesData.currentSeg >= 3) return null; // all segments closed
@@ -7068,6 +7230,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                         <span style={{ color: "var(--dim)", fontSize: 18 }}>—</span>
                         <span style={{ color: relT2 > 0 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT2}</span>
                       </div>
+                      {nineIndicator}
                     </div>
                   </Sect>
                 );
@@ -7118,6 +7281,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
                       <span style={{ color: "var(--dim)", fontSize: 18 }}>—</span>
                       <span style={{ color: relT2 > 0 ? (isLight?"#16a34a":COLORS[0]) : "var(--text)" }}>{relT2}</span>
                     </div>
+                    {nineIndicator}
                   </div>
                 </Sect>
               );
@@ -7142,7 +7306,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             onSave={() => {
               const roundData = {
                 roundId,
-                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, casinoMult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
+                config: { ...config, sixesConfig: liveSixesConfig, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, casinoMult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
                 date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                 courseName: config.courseName || "Round",
                 savedAt: Date.now(),
@@ -7156,7 +7320,7 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
             onExport={() => {
               const roundData = {
                 roundId,
-                config: { ...config, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, casinoMult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
+                config: { ...config, sixesConfig: liveSixesConfig, _roundId: roundId, _savedState: { gross, vTeams, banker, p3mult, casinoMult, holeIdx, inPlay, liveHcps, liveNames, adjustments, matchups } },
                 date: new Date().toLocaleDateString("en-SG", { day:"numeric", month:"short", year:"numeric" }),
                 courseName: config.courseName || "Round",
                 savedAt: Date.now(),
@@ -8425,6 +8589,28 @@ export default function App() {
     } catch(_) { return null; }
   });
   const [showSplash, setShowSplash] = useState(true);
+  // SW update detection — fires when browser has downloaded a new service worker
+  // (authoritative: Vercel deployed a new version). Banner prompts user to refresh.
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const swRegRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (!reg) return;
+      swRegRef.current = reg;
+      if (reg.waiting) { setUpdateAvailable(true); return; }
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing;
+        if (!nw) return;
+        nw.addEventListener('statechange', () => {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) {
+            setUpdateAvailable(true);
+          }
+        });
+      });
+    }).catch(() => {});
+  }, []);
   const [savedRounds, setSavedRounds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("sws_rounds") || "[]"); } catch { return []; }
   });
@@ -8560,6 +8746,36 @@ export default function App() {
           fontFamily: "'DM Sans', sans-serif", zIndex: 10000,
           boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
         }}>{superToast}</div>
+      )}
+      {updateAvailable && !updateDismissed && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
+          background: "#92400e", borderBottom: "1px solid #b45309",
+          padding: "10px 14px", display: "flex", alignItems: "center",
+          gap: 10, fontFamily: "'DM Sans', sans-serif", maxWidth: 480, margin: "0 auto",
+        }}>
+          <span style={{ fontSize: 16 }}>↻</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fef3c7" }}>Update available</div>
+            <div style={{ fontSize: 11, color: "#fde68a", marginTop: 1 }}>New version downloaded — refresh to activate</div>
+          </div>
+          <button onClick={() => {
+            const reg = swRegRef.current;
+            if (reg?.waiting) {
+              navigator.serviceWorker.addEventListener('controllerchange', () => window.location.reload(), { once: true });
+              reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+            } else {
+              window.location.reload();
+            }
+          }} style={{
+            background: "#fef3c7", color: "#92400e", border: "none",
+            borderRadius: 8, padding: "7px 12px", fontSize: 13, fontWeight: 700,
+            cursor: "pointer", flexShrink: 0, fontFamily: "'DM Sans', sans-serif",
+          }}>Refresh</button>
+          <button onClick={() => setUpdateDismissed(true)}
+            style={{ background: "transparent", border: "none", color: "#fde68a",
+              fontSize: 18, cursor: "pointer", padding: "0 2px", flexShrink: 0 }}>✕</button>
+        </div>
       )}
       {config
         ? <Scorecard config={config} onBack={(scores, rid) => {
