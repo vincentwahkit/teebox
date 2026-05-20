@@ -4,7 +4,7 @@ import React from "react";
 // CONSTANTS
 const COLORS = ["#4ade80", "#60a5fa", "#f97316", "#e879f9", "#fbbf24", "#22d3ee"];
 const COLORS_LIGHT = ["#16a34a", "#2563eb", "#c2410c", "#9333ea", "#b45309", "#0e7490"];
-const APP_VERSION = "vw-1.2.37";
+const APP_VERSION = "vw-1.2.38";
 
 // Catch-all "Live code" used silently when user doesn't set one.
 // Always log per-hole to this code so Sankaku/Dohyo have fresh mid-round data
@@ -3368,13 +3368,11 @@ function Setup({ onStart, savedRounds = [], onLoadRound, isLight, toggleTheme, s
                         </>)}
                       </div>
                     ))}
-                    {matchupBets.matchups.length < 6 && (
-                      <button onClick={() => setMatchupBets(n => ({
+                    <button onClick={() => setMatchupBets(n => ({
                         ...n, matchups: [...n.matchups, { type:"nassau", p1:0, p2:1, strokesFront:0, strokesBack:0, stake:5, pressMode:"off", pressMult:1, units:[1,1,2] }]
                       }))} style={{ ...S.courseBtn, width: "100%", textAlign: "center", marginTop: 2 }}>
-                        + Add Matchup ({matchupBets.matchups.length}/6)
+                        + Add Matchup
                       </button>
-                    )}
                   </div>
                 )}
               </div>
@@ -5967,6 +5965,30 @@ function Scorecard({ config, onBack, onSave, isLight, toggleTheme, isSuperuser }
     }, 200);
     return () => clearTimeout(t);
   }, [holeIdx, isLocked]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Auto-logRound for end-of-round (vw-1.2.38) ───────────────────────────
+  // Problem: the holeIdx-change trigger fires when the user navigates away from
+  // a hole. On the LAST hole most users just pocket the phone — no navigation,
+  // no trigger, last hole's data never reaches Supabase.
+  //
+  // When all 18 holes are in-play (first score entered on the last hole sets
+  // inPlay to fully true), start an 8s safe-window timer then fire logRound.
+  // logRound naturally writes is_complete:true at this point (line 5746).
+  // Timer restarts on every score change so corrections don't get cut off.
+  // Hash guard in logRound makes repeat fires with no changes a no-op.
+  const autoLogTimerRef = React.useRef(null);
+  React.useEffect(() => {
+    if (isLocked) return;
+    if (inPlay.filter(Boolean).length !== 18) {
+      if (autoLogTimerRef.current) { clearTimeout(autoLogTimerRef.current); autoLogTimerRef.current = null; }
+      return;
+    }
+    if (autoLogTimerRef.current) clearTimeout(autoLogTimerRef.current);
+    autoLogTimerRef.current = setTimeout(() => { logRound(); }, 8000);
+    return () => {
+      if (autoLogTimerRef.current) { clearTimeout(autoLogTimerRef.current); autoLogTimerRef.current = null; }
+    };
+  }, [gross, inPlay, isLocked]); // eslint-disable-line react-hooks/exhaustive-deps
   // Group code change trigger: fires whenever groupCode changes during the
   // Scorecard's lifetime, AND on initial mount (because user may have changed
   // the code via 🏠 → Setup → resume, which remounts Scorecard with the new
